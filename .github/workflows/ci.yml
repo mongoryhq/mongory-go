@@ -12,11 +12,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+
+      - name: Init submodules (fallback)
+        run: git submodule update --init --recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config
+          cmake -S mongory-core -B mongory-core/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF
+          cmake --build mongory-core/build -j$(nproc)
+          # Copy static lib to the path expected by cgo LDFLAGS
+          cp mongory-core/build/lib/libmongory-core.a mongory-core/mongory-core.a
 
       - name: Build
         run: go build ./...
