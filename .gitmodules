@@ -1,0 +1,3 @@
+[submodule "mongory-core"]
+	path = mongory-core
+	url = https://github.com/mongoryhq/mongory-core.git
