@@ -21,7 +21,7 @@ type Matcher struct {
 }
 
 func NewMatcher(pool *MemoryPool, condition map[string]any, context *any) (*Matcher, error) {
-	conditionValue := pool.ValueConvert(condition)
+	conditionValue := pool.ConditionConvert(condition)
 	if conditionValue == nil {
 		return nil, errors.New(pool.GetError())
 	}

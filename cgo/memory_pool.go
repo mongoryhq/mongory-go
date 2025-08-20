@@ -60,46 +60,66 @@ func (m *MemoryPool) GetError() string {
 	return C.GoString(err.message)
 }
 
-func (m *MemoryPool) ValueConvert(value any) *Value {
-	switch value.(type) {
-	case int:
-		return NewValueInt(m, int64(value.(int)))
-	case int8:
-		return NewValueInt(m, int64(value.(int8)))
-	case int16:
-		return NewValueInt(m, int64(value.(int16)))
-	case int32:
-		return NewValueInt(m, int64(value.(int32)))
-	case int64:
-		return NewValueInt(m, value.(int64))
-	case float32:
-		return NewValueDouble(m, float64(value.(float32)))
-	case float64:
-		return NewValueDouble(m, value.(float64))
-	case string:
-		return NewValueString(m, value.(string))
-	case bool:
-		return NewValueBool(m, value.(bool))
+func (m *MemoryPool) ConditionConvert(value any) *Value {
+	switch value := value.(type) {
+
 	case []any:
 		array := NewArray(m)
-		for _, v := range value.([]any) {
-			array.Push(m.ValueConvert(v))
+		for _, v := range value {
+			array.Push(m.ConditionConvert(v))
 		}
 		return NewValueArray(m, array)
 	case map[string]any:
 		table := NewTable(m)
-		for k, v := range value.(map[string]any) {
-			table.Set(k, m.ValueConvert(v))
+		for k, v := range value {
+			table.Set(k, m.ConditionConvert(v))
 		}
 		return NewValueTable(m, table)
+	default:
+		return m.primitiveConvert(value)
+	}
+}
+
+func (m *MemoryPool) ValueConvert(value any) *Value {
+	switch value := value.(type) {
+
+	case []any:
+		return NewValueShallowArray(m, NewShallowArray(m, value))
+	case map[string]any:
+		return NewValueShallowTable(m, NewShallowTable(m, value))
+	default:
+		return m.primitiveConvert(value)
+	}
+}
+
+func (m *MemoryPool) primitiveConvert(value any) *Value {
+	switch value := value.(type) {
+	case *Value:
+		return value
+	case *Array:
+		return NewValueArray(m, value)
+	case *Table:
+		return NewValueTable(m, value)
+	case int:
+		return NewValueInt(m, int64(value))
+	case int8:
+		return NewValueInt(m, int64(value))
+	case int16:
+		return NewValueInt(m, int64(value))
+	case int32:
+		return NewValueInt(m, int64(value))
+	case int64:
+		return NewValueInt(m, value)
+	case float32:
+		return NewValueDouble(m, float64(value))
+	case float64:
+		return NewValueDouble(m, value)
+	case string:
+		return NewValueString(m, value)
+	case bool:
+		return NewValueBool(m, value)
 	case nil:
 		return NewValueNull(m)
-	case *Value:
-		return value.(*Value)
-	case *Array:
-		return NewValueArray(m, value.(*Array))
-	case *Table:
-		return NewValueTable(m, value.(*Table))
 	default:
 		return NewValueUnsupported(m, value)
 	}
