@@ -18,6 +18,7 @@ bool go_mongory_table_delete(mongory_table* t, char* key) {
 }
 */
 import "C"
+import "unsafe"
 
 type Table struct {
 	CPoint *C.mongory_table
@@ -30,12 +31,16 @@ func NewTable(pool *MemoryPool) *Table {
 }
 
 func (t *Table) Set(key string, value *Value) bool {
-	result := C.go_mongory_table_set(t.CPoint, C.CString(key), value.CPoint)
+	ckey := C.CString(key)
+	defer C.free(unsafe.Pointer(ckey))
+	result := C.go_mongory_table_set(t.CPoint, ckey, value.CPoint)
 	return bool(result)
 }
 
 func (t *Table) Get(key string) *Value {
-	value := C.go_mongory_table_get(t.CPoint, C.CString(key))
+	ckey := C.CString(key)
+	defer C.free(unsafe.Pointer(ckey))
+	value := C.go_mongory_table_get(t.CPoint, ckey)
 	if value == nil {
 		return nil
 	}
@@ -43,6 +48,8 @@ func (t *Table) Get(key string) *Value {
 }
 
 func (t *Table) Delete(key string) bool {
-	result := C.go_mongory_table_delete(t.CPoint, C.CString(key))
+	ckey := C.CString(key)
+	defer C.free(unsafe.Pointer(ckey))
+	result := C.go_mongory_table_delete(t.CPoint, ckey)
 	return bool(result)
 }

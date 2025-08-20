@@ -4,6 +4,10 @@ package cgo
 #include <stdbool.h>
 #include <mongory-core.h>
 #include <stdlib.h>
+#include <stdint.h>
+
+static inline void* go_handle_to_ptr(uintptr_t h) { return (void*)h; }
+static inline uintptr_t go_ptr_to_handle(void* p) { return (uintptr_t)p; }
 
 char * go_mongory_value_to_string(mongory_value* v, mongory_memory_pool* pool) {
 	return v->to_str(v, pool);
@@ -50,7 +54,10 @@ void * go_mongory_value_get_null(mongory_value* v) {
 }
 */
 import "C"
-import "unsafe"
+import (
+	rcgo "runtime/cgo"
+	"unsafe"
+)
 
 type MongoryType int
 
@@ -78,7 +85,10 @@ func NewValueInt(pool *MemoryPool, i int64) *Value { // as integer
 }
 
 func NewValueString(pool *MemoryPool, s string) *Value { // as string
-	return &Value{CPoint: C.mongory_value_wrap_s(pool.CPoint, C.CString(s)), Type: MONGORY_TYPE_STRING, pool: pool}
+	cs := C.CString(s)
+	v := &Value{CPoint: C.mongory_value_wrap_s(pool.CPoint, cs), Type: MONGORY_TYPE_STRING, pool: pool}
+	C.free(unsafe.Pointer(cs))
+	return v
 }
 
 func NewValueBool(pool *MemoryPool, b bool) *Value { // as boolean
@@ -97,20 +107,29 @@ func NewValueTable(pool *MemoryPool, t *Table) *Value { // as table
 	return &Value{CPoint: C.mongory_value_wrap_t(pool.CPoint, t.CPoint), Type: MONGORY_TYPE_TABLE, pool: pool}
 }
 
-func NewValueRegex(pool *MemoryPool, regex string) *Value { // as regex
-	return &Value{CPoint: C.mongory_value_wrap_regex(pool.CPoint, unsafe.Pointer(&regex)), Type: MONGORY_TYPE_REGEX, pool: pool}
+func NewValueRegex(pool *MemoryPool, regex any) *Value { // as regex (store Go handle)
+	h := rcgo.NewHandle(regex)
+	pool.trackHandle(h)
+	ptr := C.go_handle_to_ptr(C.uintptr_t(uintptr(h)))
+	return &Value{CPoint: C.mongory_value_wrap_regex(pool.CPoint, ptr), Type: MONGORY_TYPE_REGEX, pool: pool}
 }
 
-func NewValuePointer(pool *MemoryPool, ptr unsafe.Pointer) *Value { // as generic pointer
-	return &Value{CPoint: C.mongory_value_wrap_ptr(pool.CPoint, ptr), Type: MONGORY_TYPE_POINTER, pool: pool}
+func NewValuePointer(pool *MemoryPool, ptr any) *Value { // as generic pointer (store Go handle)
+	h := rcgo.NewHandle(ptr)
+	pool.trackHandle(h)
+	vptr := C.go_handle_to_ptr(C.uintptr_t(uintptr(h)))
+	return &Value{CPoint: C.mongory_value_wrap_ptr(pool.CPoint, vptr), Type: MONGORY_TYPE_POINTER, pool: pool}
 }
 
-func NewValueUnsupported(pool *MemoryPool, u any) *Value { // as unsupported type
-	return &Value{CPoint: C.mongory_value_wrap_u(pool.CPoint, unsafe.Pointer(&u)), Type: MONGORY_TYPE_UNSUPPORTED, pool: pool}
+func NewValueUnsupported(pool *MemoryPool, u any) *Value { // as unsupported type (store Go handle)
+	h := rcgo.NewHandle(u)
+	pool.trackHandle(h)
+	uptr := C.go_handle_to_ptr(C.uintptr_t(uintptr(h)))
+	return &Value{CPoint: C.mongory_value_wrap_u(pool.CPoint, uptr), Type: MONGORY_TYPE_UNSUPPORTED, pool: pool}
 }
 
-func NewValueNull(pool *MemoryPool, n any) *Value { // as null pointer
-	return &Value{CPoint: C.mongory_value_wrap_n(pool.CPoint, unsafe.Pointer(&n)), Type: MONGORY_TYPE_NULL, pool: pool}
+func NewValueNull(pool *MemoryPool) *Value { // as null pointer
+	return &Value{CPoint: C.mongory_value_wrap_n(pool.CPoint, nil), Type: MONGORY_TYPE_NULL, pool: pool}
 }
 
 func (v *Value) ToString() string {
@@ -208,17 +227,26 @@ func (v *Value) GetUnsupported() any {
 	if ptr == nil {
 		return nil
 	}
-	return unsafe.Pointer(ptr)
+	h := rcgo.Handle(C.go_ptr_to_handle(ptr))
+	return h.Value()
 }
 
 func (v *Value) GetNull() any {
 	return nil
 }
 
-func (v *Value) GetRegex() string {
-	regex := C.go_mongory_value_get_regex(v.CPoint)
-	if regex == nil {
-		return ""
+func (v *Value) GetRegexHandle() rcgo.Handle {
+	ptr := C.go_mongory_value_get_regex(v.CPoint)
+	if ptr == nil {
+		return rcgo.Handle(0)
 	}
-	return C.GoString((*C.char)(regex))
+	return rcgo.Handle(C.go_ptr_to_handle(ptr))
+}
+
+func (v *Value) GetPointerHandle() rcgo.Handle {
+	ptr := C.go_mongory_value_get_ptr(v.CPoint)
+	if ptr == nil {
+		return rcgo.Handle(0)
+	}
+	return rcgo.Handle(C.go_ptr_to_handle(ptr))
 }

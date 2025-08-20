@@ -18,27 +18,38 @@ void go_mongory_memory_pool_free(mongory_memory_pool* pool) {
 }
 */
 import "C"
-import "unsafe"
+import (
+	rcgo "runtime/cgo"
+)
 
 type MemoryPool struct {
-	CPoint *C.mongory_memory_pool
+	CPoint  *C.mongory_memory_pool
+	handles []rcgo.Handle
 }
 
 func NewMemoryPool() *MemoryPool {
 	pool := C.mongory_memory_pool_new()
-	return &MemoryPool{CPoint: pool}
+	return &MemoryPool{CPoint: pool, handles: make([]rcgo.Handle, 0)}
 }
 
-func (m *MemoryPool) Alloc(size uint64) unsafe.Pointer {
-	return C.go_mongory_memory_pool_alloc(m.CPoint, C.size_t(size))
+func (m *MemoryPool) trackHandle(h rcgo.Handle) {
+	m.handles = append(m.handles, h)
 }
 
 func (m *MemoryPool) Reset() {
 	C.go_mongory_memory_pool_reset(m.CPoint)
+	for _, h := range m.handles {
+		h.Delete()
+	}
+	m.handles = m.handles[:0]
 }
 
 func (m *MemoryPool) Free() {
 	C.go_mongory_memory_pool_free(m.CPoint)
+	for _, h := range m.handles {
+		h.Delete()
+	}
+	m.handles = nil
 }
 
 func (m *MemoryPool) GetError() string {
@@ -82,7 +93,7 @@ func (m *MemoryPool) ValueConvert(value any) *Value {
 		}
 		return NewValueTable(m, table)
 	case nil:
-		return NewValueNull(m, nil)
+		return NewValueNull(m)
 	case *Value:
 		return value.(*Value)
 	case *Array:
