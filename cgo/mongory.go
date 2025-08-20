@@ -1,8 +1,8 @@
 package cgo
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../mongory-core/include
-#cgo LDFLAGS: ${SRCDIR}/../mongory-core/mongory-core.a -lm
+#cgo CFLAGS: -I${SRCDIR}/binding/include -I${SRCDIR}/binding/src -I${SRCDIR}/../mongory-core/include
+#cgo LDFLAGS: -lm
 #include <stdbool.h>
 #include <mongory-core.h>
 #include <stdlib.h>
