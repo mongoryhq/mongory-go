@@ -6,8 +6,8 @@ package cgo
 #include <stdlib.h>
 #include <stdint.h>
 
-static inline void* go_handle_to_ptr(uintptr_t h) { return (void*)h; }
-static inline uintptr_t go_ptr_to_handle(void* p) { return (uintptr_t)p; }
+void* go_handle_to_ptr(uintptr_t h) { return (void*)h; }
+uintptr_t go_ptr_to_handle(void* p) { return (uintptr_t)p; }
 
 char * go_mongory_value_to_string(mongory_value* v, mongory_memory_pool* pool) {
 	return v->to_str(v, pool);
@@ -52,6 +52,27 @@ void * go_mongory_value_get_regex(mongory_value* v) {
 void * go_mongory_value_get_null(mongory_value* v) {
   return v->data.u;
 }
+
+// Forward declarations for shallow to_string
+extern char *go_shallow_array_to_string(void *go_array, mongory_memory_pool *pool);
+extern char *go_shallow_table_to_string(void *go_table, mongory_memory_pool *pool);
+
+static char *cgo_shallow_array_to_string(mongory_value *v, mongory_memory_pool *pool) {
+	return go_shallow_array_to_string(v->data.a, pool);
+}
+
+static char *cgo_shallow_table_to_string(mongory_value *v, mongory_memory_pool *pool) {
+	return go_shallow_table_to_string(v->data.t, pool);
+}
+
+static void mongory_value_set_array_to_string(mongory_value *v) {
+	v->to_str = cgo_shallow_array_to_string;
+}
+
+static void mongory_value_set_table_to_string(mongory_value *v) {
+	v->to_str = cgo_shallow_table_to_string;
+}
+
 */
 import "C"
 import (
@@ -103,8 +124,20 @@ func NewValueArray(pool *MemoryPool, a *Array) *Value { // as array
 	return &Value{CPoint: C.mongory_value_wrap_a(pool.CPoint, a.CPoint), Type: MONGORY_TYPE_ARRAY, pool: pool}
 }
 
+func NewValueShallowArray(pool *MemoryPool, a *ShallowArray) *Value { // as array
+	value := &Value{CPoint: C.mongory_value_wrap_a(pool.CPoint, a.CPoint), Type: MONGORY_TYPE_ARRAY, pool: pool}
+	C.mongory_value_set_array_to_string(value.CPoint)
+	return value
+}
+
 func NewValueTable(pool *MemoryPool, t *Table) *Value { // as table
 	return &Value{CPoint: C.mongory_value_wrap_t(pool.CPoint, t.CPoint), Type: MONGORY_TYPE_TABLE, pool: pool}
+}
+
+func NewValueShallowTable(pool *MemoryPool, t *ShallowTable) *Value { // as table
+	value := &Value{CPoint: C.mongory_value_wrap_t(pool.CPoint, t.CPoint), Type: MONGORY_TYPE_TABLE, pool: pool}
+	C.mongory_value_set_table_to_string(value.CPoint)
+	return value
 }
 
 func NewValueRegex(pool *MemoryPool, regex any) *Value { // as regex (store Go handle)

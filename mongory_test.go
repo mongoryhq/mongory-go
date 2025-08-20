@@ -7,11 +7,11 @@ import (
 )
 
 func TestBasic(t *testing.T) {
-	matcher, err := NewMatcher(map[string]any{"key": "hello"}, nil)
+	matcher, err := NewMatcher(map[string]any{"key1": "hello"}, nil)
 	if err != nil {
 		t.Fatalf("NewMatcher failed: %v", err)
 	}
-	result, err := matcher.Match(map[string]any{"key": "hello"})
+	result, err := matcher.Match(map[string]any{"key1": "hello"})
 	if err != nil {
 		t.Fatalf("Match failed: %v", err)
 	}
@@ -19,16 +19,17 @@ func TestBasic(t *testing.T) {
 }
 
 func TestTrace(t *testing.T) {
-	matcher, err := NewMatcher(map[string]any{"key": "hello"}, nil)
+	matcher, err := NewMatcher(map[string]any{"key2": "hello"}, nil)
 	if err != nil {
 		t.Fatalf("NewMatcher failed: %v", err)
 	}
-	result, err := matcher.Trace(map[string]any{"key": "hello"})
+	result, err := matcher.Trace(map[string]any{"key2": "hello"})
+	fmt.Println("result", result)
 	if err != nil {
 		t.Fatalf("Trace failed: %v", err)
 	}
 	fmt.Println("result", result)
-	result, err = matcher.Trace(map[string]any{"key": "world"})
+	result, err = matcher.Trace(map[string]any{"key3": "world"})
 	if err != nil {
 		t.Fatalf("Trace failed: %v", err)
 	}
