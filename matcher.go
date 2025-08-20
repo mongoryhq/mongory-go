@@ -28,15 +28,3 @@ func NewMatcher(condition map[string]any, context *any) (Matcher, error) {
 	})
 	return matcher, nil
 }
-
-func Cleanup() {
-	cgo.Cleanup()
-}
-
-func Init() {
-	cgo.Init()
-}
-
-func init() {
-	cgo.Init()
-}
