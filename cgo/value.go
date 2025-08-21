@@ -54,15 +54,15 @@ void * go_mongory_value_get_null(mongory_value* v) {
 }
 
 // Forward declarations for shallow to_string
-extern char *go_shallow_array_to_string(void *go_array, mongory_memory_pool *pool);
-extern char *go_shallow_table_to_string(void *go_table, mongory_memory_pool *pool);
+extern char *go_shallow_array_to_string(void *go_array);
+extern char *go_shallow_table_to_string(void *go_table);
 
 static char *cgo_shallow_array_to_string(mongory_value *v, mongory_memory_pool *pool) {
-	return go_shallow_array_to_string(v->data.a, pool);
+	return go_shallow_array_to_string(v->data.a);
 }
 
 static char *cgo_shallow_table_to_string(mongory_value *v, mongory_memory_pool *pool) {
-	return go_shallow_table_to_string(v->data.t, pool);
+	return go_shallow_table_to_string(v->data.t);
 }
 
 static void mongory_value_set_array_to_string(mongory_value *v) {
