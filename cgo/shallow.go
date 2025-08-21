@@ -99,7 +99,7 @@ func go_shallow_array_get(a *C.go_mongory_array, index C.size_t) *C.mongory_valu
 }
 
 //export go_shallow_array_to_string
-func go_shallow_array_to_string(a *C.go_mongory_array, pool *C.mongory_memory_pool) *C.char {
+func go_shallow_array_to_string(a *C.go_mongory_array) *C.char {
 	h := rcgo.Handle(C.go_ptr_to_handle(a.go_array))
 	target := h.Value().([]any)
 	return C.CString(fmt.Sprintf("%v", target)) // TODO: implement
@@ -138,7 +138,7 @@ func go_shallow_table_get(a *C.go_mongory_table, key *C.char) *C.mongory_value {
 }
 
 //export go_shallow_table_to_string
-func go_shallow_table_to_string(t *C.go_mongory_table, pool *C.mongory_memory_pool) *C.char {
+func go_shallow_table_to_string(t *C.go_mongory_table) *C.char {
 	h := rcgo.Handle(C.go_ptr_to_handle(t.go_table))
 	target := h.Value().(map[string]any)
 	return C.CString(fmt.Sprintf("%v", target)) // TODO: implement
