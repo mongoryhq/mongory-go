@@ -17,6 +17,7 @@ type Matcher struct {
 	context      *any
 	pool         *MemoryPool
 	scratchPool  *MemoryPool
+	tracePool    *MemoryPool
 	traceEnabled bool
 }
 
@@ -36,6 +37,7 @@ func NewMatcher(pool *MemoryPool, condition map[string]any, context *any) (*Matc
 		context:      context,
 		pool:         pool,
 		scratchPool:  scratchPool,
+		tracePool:    nil,
 		traceEnabled: false,
 	}, nil
 }
@@ -46,9 +48,8 @@ func (m *Matcher) Match(value any) (bool, error) {
 		return false, errors.New(m.scratchPool.GetError())
 	}
 	result := bool(C.mongory_matcher_match(m.CPoint, convertedValue.CPoint))
-	if !m.traceEnabled {
-		m.scratchPool.Reset()
-	}
+	m.scratchPool.Reset()
+
 	return result, nil
 }
 
@@ -62,43 +63,48 @@ func (m *Matcher) Explain() error {
 }
 
 func (m *Matcher) Trace(value any) (bool, error) {
-	convertedValue := m.scratchPool.ValueConvert(value)
+	tracePool := NewMemoryPool()
+	convertedValue := tracePool.ValueConvert(value)
 	if convertedValue == nil {
-		return false, errors.New(m.scratchPool.GetError())
+		return false, errors.New(tracePool.GetError())
 	}
 	result := bool(C.mongory_matcher_trace(m.CPoint, convertedValue.CPoint))
-	m.scratchPool.Reset()
+	tracePool.Free()
 	return result, nil
 }
 
 func (m *Matcher) EnableTrace() error {
 	m.traceEnabled = true
-	C.mongory_matcher_enable_trace(m.CPoint, m.scratchPool.CPoint)
-	if m.scratchPool.GetError() != "" {
-		return errors.New(m.scratchPool.GetError())
+	if m.tracePool == nil {
+		m.tracePool = NewMemoryPool()
+	}
+	C.mongory_matcher_enable_trace(m.CPoint, m.tracePool.CPoint)
+	if m.tracePool.GetError() != "" {
+		return errors.New(m.tracePool.GetError())
 	}
 	return nil
 }
 
 func (m *Matcher) DisableTrace() error {
-	if m.traceEnabled {
-		C.mongory_matcher_disable_trace(m.CPoint)
+	if !m.traceEnabled {
+		return nil
 	}
-	if m.scratchPool.GetError() != "" {
-		return errors.New(m.scratchPool.GetError())
-	}
-	m.scratchPool.Reset()
+	C.mongory_matcher_disable_trace(m.CPoint)
+	m.tracePool.Free()
+	m.tracePool = nil
 	m.traceEnabled = false
 	return nil
 }
 
 func (m *Matcher) PrintTrace() error {
-	if m.traceEnabled {
-		C.mongory_matcher_print_trace(m.CPoint)
+	if !m.traceEnabled {
+		return nil
 	}
-	if m.scratchPool.GetError() != "" {
-		return errors.New(m.scratchPool.GetError())
+	C.mongory_matcher_print_trace(m.CPoint)
+	if m.tracePool.GetError() != "" {
+		return errors.New(m.tracePool.GetError())
 	}
+
 	return nil
 }
 
@@ -113,4 +119,7 @@ func (m *Matcher) GetContext() *any {
 func (m *Matcher) Free() {
 	m.scratchPool.Free()
 	m.pool.Free()
+	if m.tracePool != nil {
+		m.tracePool.Free()
+	}
 }

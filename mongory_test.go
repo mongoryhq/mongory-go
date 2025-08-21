@@ -23,16 +23,22 @@ func TestTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMatcher failed: %v", err)
 	}
-	result, err := matcher.Trace(map[string]any{"key2": "hello"})
+	err = matcher.EnableTrace()
+	if err != nil {
+		t.Fatalf("EnableTrace failed: %v", err)
+	}
+	result, err := matcher.Match(map[string]any{"key2": "hello"})
 	fmt.Println("result", result)
 	if err != nil {
-		t.Fatalf("Trace failed: %v", err)
+		t.Fatalf("Match failed: %v", err)
 	}
 	fmt.Println("result", result)
-	result, err = matcher.Trace(map[string]any{"key3": "world"})
+	result, err = matcher.Match(map[string]any{"key3": "world"})
 	if err != nil {
-		t.Fatalf("Trace failed: %v", err)
+		t.Fatalf("Match failed: %v", err)
 	}
+	matcher.PrintTrace()
+	matcher.DisableTrace()
 	fmt.Println("result", result)
 }
 
