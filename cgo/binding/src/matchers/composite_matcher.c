@@ -115,18 +115,6 @@ bool mongory_matcher_or_match(mongory_matcher *matcher, mongory_value *value) {
 }
 
 /**
- * @brief Validates if a condition value is a non-null table.
- * Used by table_cond_new and multi_table_cond_validate.
- * @param condition The mongory_value to validate.
- * @param acc Unused accumulator for the array `each` callback.
- * @return True if condition is a valid table, false otherwise.
- */
-static inline bool mongory_matcher_table_cond_validate(mongory_value *condition, void *acc) {
-  (void)acc; // Unused parameter.
-  return condition != NULL && condition->type == MONGORY_TYPE_TABLE && condition->data.t != NULL;
-}
-
-/**
  * @brief Context structure for building sub-matchers from a table.
  */
 typedef struct mongory_matcher_table_build_sub_matcher_context {
@@ -134,6 +122,8 @@ typedef struct mongory_matcher_table_build_sub_matcher_context {
   mongory_array *matchers;   /**< Array to store the created sub-matchers. */
   void *extern_ctx;          /**< External context for the matcher. */
 } mongory_matcher_table_build_sub_matcher_context;
+
+static inline mongory_matcher *mongory_matcher_build_sub_matcher(char *key, mongory_value *value, mongory_matcher_table_build_sub_matcher_context *ctx);
 
 /**
  * @brief Callback for iterating over a condition table's key-value pairs.
@@ -148,29 +138,10 @@ typedef struct mongory_matcher_table_build_sub_matcher_context {
  * @param acc Pointer to `mongory_matcher_table_build_sub_matcher_context`.
  * @return True to continue iteration, false if a sub-matcher creation fails.
  */
-// ============================================================================
-// Matcher Construction from Conditions
-// ============================================================================
 static inline bool mongory_matcher_table_build_sub_matcher(char *key, mongory_value *value, void *acc) {
   mongory_matcher_table_build_sub_matcher_context *ctx = (mongory_matcher_table_build_sub_matcher_context *)acc;
-  mongory_memory_pool *pool = ctx->pool;
   mongory_array *matchers_array = ctx->matchers;
-  mongory_matcher *sub_matcher = NULL;
-  mongory_matcher_build_func build_func = NULL;
-
-  if (key[0] == '$') { // Operator key (e.g., "$eq", "$in")
-    build_func = mongory_matcher_build_func_get(key);
-    if (build_func != NULL) {
-      sub_matcher = build_func(pool, value, ctx->extern_ctx);
-    } else if (mongory_custom_matcher_adapter.lookup != NULL && mongory_custom_matcher_adapter.lookup(key)) {
-      sub_matcher = mongory_matcher_custom_new(pool, key, value, ctx->extern_ctx);
-    } else {
-      sub_matcher = mongory_matcher_field_new(pool, key, value, ctx->extern_ctx);  
-    }
-  } else {
-    sub_matcher = mongory_matcher_field_new(pool, key, value, ctx->extern_ctx);
-  }
-
+  mongory_matcher *sub_matcher = mongory_matcher_build_sub_matcher(key, value, ctx);
   if (sub_matcher == NULL) {
     // Failed to create sub-matcher (e.g., allocation error, invalid condition
     // for sub-matcher)
@@ -179,6 +150,37 @@ static inline bool mongory_matcher_table_build_sub_matcher(char *key, mongory_va
 
   matchers_array->push(matchers_array, (mongory_value *)sub_matcher);
   return true;
+}
+
+/**
+ * @brief Builds a sub-matcher from a key-value pair.
+ *
+ * This function determines the appropriate sub-matcher type based on the key:
+ * - If the key starts with '$', it looks up a registered matcher builder.
+ * - Otherwise, it creates a field matcher.
+ *
+ * @param key The key from the condition table.
+ * @param value The value associated with the key.
+ * @param ctx Pointer to `mongory_matcher_table_build_sub_matcher_context`.
+ * @return A new sub-matcher, or NULL on failure.
+ */
+// ============================================================================
+// Matcher Construction from Conditions
+// ============================================================================
+static inline mongory_matcher *mongory_matcher_build_sub_matcher(char *key, mongory_value *value, mongory_matcher_table_build_sub_matcher_context *ctx) {
+  mongory_memory_pool *pool = ctx->pool;
+  mongory_matcher_build_func build_func = NULL;
+
+  if (key[0] == '$') { // Operator key (e.g., "$eq", "$in")
+    build_func = mongory_matcher_build_func_get(key);
+    if (build_func != NULL) {
+      return build_func(pool, value, ctx->extern_ctx);
+    } else if (mongory_custom_matcher_adapter.lookup != NULL && mongory_custom_matcher_adapter.lookup(key)) {
+      return mongory_matcher_custom_new(pool, key, value, ctx->extern_ctx);
+    }
+  }
+
+  return mongory_matcher_field_new(pool, key, value, ctx->extern_ctx);
 }
 
 /**
@@ -201,20 +203,15 @@ static inline bool mongory_matcher_table_build_sub_matcher(char *key, mongory_va
  * @param condition A `mongory_value` of type `MONGORY_TYPE_TABLE`.
  * @return A `mongory_matcher` representing the combined logic of the table, or NULL on failure.
  */
-mongory_matcher *mongory_matcher_table_cond_new(mongory_memory_pool *pool, mongory_value *condition, void *extern_ctx) {
-  if (!mongory_matcher_table_cond_validate(condition, NULL)) {
-    pool->error = MG_ALLOC_PTR(pool, mongory_error);
-    if (pool->error) {
-      pool->error->type = MONGORY_ERROR_INVALID_ARGUMENT;
-      pool->error->message = "Condition target must be a valid table.";
-    }
+mongory_matcher *mongory_matcher_table_cond_new(mongory_memory_pool *pool, mongory_value *table_condition, void *extern_ctx) {
+  if (!MONGORY_VALIDATE_TABLE(pool, table_condition)) {
     return NULL;
   }
 
-  mongory_table *table = condition->data.t;
+  mongory_table *table = table_condition->data.t;
   if (table->count == 0) {
     // Empty table condition matches everything.
-    return mongory_matcher_always_true_new(pool, condition, extern_ctx);
+    return mongory_matcher_always_true_new(pool, table_condition, extern_ctx);
   }
 
   mongory_array *sub_matchers = mongory_array_new(pool);
@@ -233,7 +230,7 @@ mongory_matcher *mongory_matcher_table_cond_new(mongory_memory_pool *pool, mongo
   }
 
   // Combine sub-matchers using AND logic.
-  mongory_composite_matcher *final_matcher = mongory_matcher_composite_new(pool, condition, extern_ctx);
+  mongory_composite_matcher *final_matcher = mongory_matcher_composite_new(pool, table_condition, extern_ctx);
   if (final_matcher == NULL)
     return NULL;
   final_matcher->children = mongory_matcher_sort_matchers(sub_matchers);
@@ -246,20 +243,6 @@ mongory_matcher *mongory_matcher_table_cond_new(mongory_memory_pool *pool, mongo
 }
 
 /**
- * @brief Validates if a condition is an array of valid tables.
- * Used by $and and $or matcher constructors.
- * @param condition The mongory_value to validate.
- * @return True if valid, false otherwise.
- */
-static inline bool mongory_matcher_multi_table_cond_validate(mongory_value *condition) {
-  if (!condition || condition->type != MONGORY_TYPE_ARRAY || !condition->data.a) {
-    return false; // Must be a non-null array.
-  }
-  // Check each element of the array.
-  return condition->data.a->each(condition->data.a, NULL, mongory_matcher_table_cond_validate);
-}
-
-/**
  * @brief Callback for $and constructor to build sub-matchers from each table
  * in the condition array. This is a bit complex: each element of the $and array
  * is a table, and each key-value in THAT table becomes a sub-matcher. These
@@ -268,14 +251,14 @@ static inline bool mongory_matcher_multi_table_cond_validate(mongory_value *cond
  * @param acc Pointer to `mongory_matcher_table_build_sub_matcher_context`.
  * @return Result of iterating through `condition_table`.
  */
-static inline bool mongory_matcher_build_and_sub_matcher(mongory_value *condition_table, void *acc) {
-  // The 'condition_table' is one of the tables in the $and:[{}, {}, ...] array.
+static inline bool mongory_matcher_build_and_sub_matcher(mongory_value *and_sub_condition, void *acc) {
+  // The 'and_sub_condition' is one of the tables in the $and:[{}, {}, ...] array.
   // We need to build all matchers from this table and add them to the list.
   // The list in 'acc' (ctx->matchers) will then be ANDed together.
-  if (!condition_table || condition_table->type != MONGORY_TYPE_TABLE || !condition_table->data.t) {
+  if (!MONGORY_VALIDATE_TABLE(and_sub_condition->pool, and_sub_condition)) {
     return false; // Element in $and array is not a table.
   }
-  return condition_table->data.t->each(condition_table->data.t, acc, mongory_matcher_table_build_sub_matcher);
+  return and_sub_condition->data.t->each(and_sub_condition->data.t, acc, mongory_matcher_table_build_sub_matcher);
 }
 
 /**
@@ -290,19 +273,19 @@ static inline bool mongory_matcher_build_and_sub_matcher(mongory_value *conditio
  * @param condition A `mongory_value` array of table conditions.
  * @return A new $and matcher, or NULL on failure.
  */
-mongory_matcher *mongory_matcher_and_new(mongory_memory_pool *pool, mongory_value *condition, void *extern_ctx) {
-  if (!mongory_matcher_multi_table_cond_validate(condition)) {
-    pool->error = MG_ALLOC_PTR(pool, mongory_error);
-    if (pool->error) {
-      pool->error->type = MONGORY_ERROR_INVALID_ARGUMENT;
-      pool->error->message = "$and condition must be an array of tables.";
-    }
+mongory_matcher *mongory_matcher_and_new(mongory_memory_pool *pool, mongory_value *and_condition, void *extern_ctx) {
+  if (!MONGORY_VALIDATE_ARRAY(pool, and_condition)) {
     return NULL;
   }
 
-  mongory_array *array_of_tables = condition->data.a;
+  mongory_array *array_of_tables = and_condition->data.a;
   if (array_of_tables->count == 0) {
-    return mongory_matcher_always_true_new(pool, condition, extern_ctx); // $and:[] is true
+    return mongory_matcher_always_true_new(pool, and_condition, extern_ctx); // $and:[] is true
+  }
+  mongory_value *sub_condition_of_and_condition = array_of_tables->get(array_of_tables, 0);
+
+  if (!MONGORY_VALIDATE_TABLE(pool, sub_condition_of_and_condition)) {
+    return NULL;
   }
 
   mongory_array *sub_matchers = mongory_array_new(pool);
@@ -323,14 +306,14 @@ mongory_matcher *mongory_matcher_and_new(mongory_memory_pool *pool, mongory_valu
   }
 
   if (sub_matchers->count == 0) {
-    return mongory_matcher_always_true_new(pool, condition, extern_ctx);
+    return mongory_matcher_always_true_new(pool, and_condition, extern_ctx);
   }
 
   if (sub_matchers->count == 1) {
     return (mongory_matcher *)sub_matchers->get(sub_matchers, 0);
   }
 
-  mongory_composite_matcher *final_matcher = mongory_matcher_composite_new(pool, condition, extern_ctx);
+  mongory_composite_matcher *final_matcher = mongory_matcher_composite_new(pool, and_condition, extern_ctx);
   if (final_matcher == NULL)
     return NULL;
   final_matcher->children = mongory_matcher_sort_matchers(sub_matchers);
@@ -380,18 +363,17 @@ static inline bool mongory_matcher_build_or_sub_matcher(mongory_value *condition
  * @param condition A `mongory_value` array of table conditions.
  * @return A new $or matcher, or NULL on failure.
  */
-mongory_matcher *mongory_matcher_or_new(mongory_memory_pool *pool, mongory_value *condition, void *extern_ctx) {
-  if (!mongory_matcher_multi_table_cond_validate(condition)) {
-    pool->error = MG_ALLOC_PTR(pool, mongory_error);
-    if (pool->error) {
-      pool->error->type = MONGORY_ERROR_INVALID_ARGUMENT;
-      pool->error->message = "$or condition must be an array of tables.";
-    }
+mongory_matcher *mongory_matcher_or_new(mongory_memory_pool *pool, mongory_value *or_condition, void *extern_ctx) {
+  if (!MONGORY_VALIDATE_ARRAY(pool, or_condition)) {
     return NULL;
   }
-  mongory_array *array_of_tables = condition->data.a;
+  mongory_array *array_of_tables = or_condition->data.a;
   if (array_of_tables->count == 0) {
-    return mongory_matcher_always_false_new(pool, condition, extern_ctx); // $or:[] is false
+    return mongory_matcher_always_false_new(pool, or_condition, extern_ctx); // $or:[] is false
+  }
+  mongory_value *sub_condition_of_or_condition = array_of_tables->get(array_of_tables, 0);
+  if (!MONGORY_VALIDATE_TABLE(pool, sub_condition_of_or_condition)) {
+    return NULL;
   }
 
   mongory_array *sub_matchers = mongory_array_new(pool);
@@ -412,7 +394,7 @@ mongory_matcher *mongory_matcher_or_new(mongory_memory_pool *pool, mongory_value
     return (mongory_matcher *)sub_matchers->get(sub_matchers, 0);
   }
 
-  mongory_composite_matcher *final_matcher = mongory_matcher_composite_new(pool, condition, extern_ctx);
+  mongory_composite_matcher *final_matcher = mongory_matcher_composite_new(pool, or_condition, extern_ctx);
   if (final_matcher == NULL)
     return NULL;
   final_matcher->children = mongory_matcher_sort_matchers(sub_matchers);
@@ -436,11 +418,11 @@ mongory_matcher *mongory_matcher_or_new(mongory_memory_pool *pool, mongory_value
 // ============================================================================
 // Array-based Match Functions ($elemMatch, $every)
 // ============================================================================
-static inline bool mongory_matcher_elem_match_match(mongory_matcher *matcher, mongory_value *value_to_check) {
-  if (!value_to_check || value_to_check->type != MONGORY_TYPE_ARRAY || !value_to_check->data.a) {
+static inline bool mongory_matcher_elem_match_match(mongory_matcher *matcher, mongory_value *elem_match_target) {
+  if (elem_match_target == NULL || elem_match_target->type != MONGORY_TYPE_ARRAY) {
     return false; // $elemMatch applies to arrays.
   }
-  mongory_array *target_array = value_to_check->data.a;
+  mongory_array *target_array = elem_match_target->data.a;
   if (target_array->count == 0)
     return false; // Empty array cannot have a matching element.
 
@@ -462,18 +444,21 @@ static inline bool mongory_matcher_elem_match_match(mongory_matcher *matcher, mo
  * @param condition The table condition for matching array elements.
  * @return A new $elemMatch matcher, or NULL on failure.
  */
-mongory_matcher *mongory_matcher_elem_match_new(mongory_memory_pool *pool, mongory_value *condition, void *extern_ctx) {
+mongory_matcher *mongory_matcher_elem_match_new(mongory_memory_pool *pool, mongory_value *elem_match_condition, void *extern_ctx) {
+  if (!MONGORY_VALIDATE_TABLE(pool, elem_match_condition)) {
+    return NULL;
+  }
   mongory_array *sub_matchers = mongory_array_new(pool);
   if (sub_matchers == NULL)
     return NULL;
   mongory_matcher_table_build_sub_matcher_context build_ctx = {pool, sub_matchers, extern_ctx};
-  if (!mongory_matcher_build_and_sub_matcher(condition, &build_ctx))
+  if (!mongory_matcher_build_and_sub_matcher(elem_match_condition, &build_ctx))
     return NULL;
 
   if (sub_matchers->count == 0)
-    return mongory_matcher_always_false_new(pool, condition, extern_ctx);
+    return mongory_matcher_always_false_new(pool, elem_match_condition, extern_ctx);
 
-  mongory_composite_matcher *composite = mongory_matcher_composite_new(pool, condition, extern_ctx);
+  mongory_composite_matcher *composite = mongory_matcher_composite_new(pool, elem_match_condition, extern_ctx);
   if (composite == NULL)
     return NULL;
 
@@ -495,11 +480,11 @@ mongory_matcher *mongory_matcher_elem_match_new(mongory_memory_pool *pool, mongo
  * @return True if `value_to_check` is an array and all its elements match (or
  * if array is empty).
  */
-static inline bool mongory_matcher_every_match(mongory_matcher *matcher, mongory_value *value_to_check) {
-  if (!value_to_check || value_to_check->type != MONGORY_TYPE_ARRAY || !value_to_check->data.a) {
+static inline bool mongory_matcher_every_match(mongory_matcher *matcher, mongory_value *every_match_target) {
+  if (every_match_target == NULL || every_match_target->type != MONGORY_TYPE_ARRAY) {
     return false;
   }
-  mongory_array *target_array = value_to_check->data.a;
+  mongory_array *target_array = every_match_target->data.a;
   if (target_array->count == 0)
     return false; // Non-empty array must have at least one element.
 
@@ -521,18 +506,21 @@ static inline bool mongory_matcher_every_match(mongory_matcher *matcher, mongory
  * @param condition The table condition for matching array elements.
  * @return A new $every matcher, or NULL on failure.
  */
-mongory_matcher *mongory_matcher_every_new(mongory_memory_pool *pool, mongory_value *condition, void *extern_ctx) {
+mongory_matcher *mongory_matcher_every_new(mongory_memory_pool *pool, mongory_value *every_condition, void *extern_ctx) {
+  if (!MONGORY_VALIDATE_TABLE(pool, every_condition)) {
+    return NULL;
+  }
   mongory_array *sub_matchers = mongory_array_new(pool);
   if (sub_matchers == NULL)
     return NULL;
   mongory_matcher_table_build_sub_matcher_context build_ctx = {pool, sub_matchers, extern_ctx};
-  if (!mongory_matcher_build_and_sub_matcher(condition, &build_ctx))
+  if (!mongory_matcher_build_and_sub_matcher(every_condition, &build_ctx))
     return NULL;
 
   if (sub_matchers->count == 0)
-    return mongory_matcher_always_true_new(pool, condition, extern_ctx);
+    return mongory_matcher_always_true_new(pool, every_condition, extern_ctx);
 
-  mongory_composite_matcher *composite = mongory_matcher_composite_new(pool, condition, extern_ctx);
+  mongory_composite_matcher *composite = mongory_matcher_composite_new(pool, every_condition, extern_ctx);
   if (composite == NULL)
     return NULL;
 
@@ -544,6 +532,10 @@ mongory_matcher *mongory_matcher_every_new(mongory_memory_pool *pool, mongory_va
   composite->base.priority = 3.0 + mongory_matcher_calculate_priority(sub_matchers);
   return (mongory_matcher *)composite;
 }
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 /**
  * @brief Calculates the priority of a composite matcher.
@@ -572,6 +564,7 @@ static inline size_t mongory_matcher_calc_priority(mongory_value *matcher_value,
 mongory_array *mongory_matcher_sort_matchers(mongory_array *sub_matchers) {
   mongory_memory_pool *temp_pool = mongory_memory_pool_new();
   if (temp_pool == NULL) {
+    sub_matchers->pool->error = &MONGORY_ALLOC_ERROR;
     return NULL;
   }
   mongory_array *sorted_matchers = mongory_array_sort_by(sub_matchers, temp_pool, NULL, mongory_matcher_calc_priority);
