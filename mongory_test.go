@@ -44,11 +44,11 @@ func TestTrace(t *testing.T) {
 
 func TestExplain(t *testing.T) {
 	matcher, err := NewMatcher(map[string]any{
-		"name": "John",
 		"age": map[string]any{
 			"$gt": 18,
 			"$lt": 30,
 		},
+		"name": "John",
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewMatcher failed: %v", err)

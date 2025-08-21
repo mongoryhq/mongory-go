@@ -65,6 +65,10 @@ mongory_matcher *mongory_matcher_new(mongory_memory_pool *pool, mongory_value *c
 bool mongory_matcher_match(mongory_matcher *matcher, mongory_value *value) { return matcher->match(matcher, value); }
 
 static bool mongory_matcher_explain_cb(mongory_matcher *matcher, mongory_matcher_traverse_context *ctx) {
+  MONGORY_VALIDATE_PTR(ctx->pool, matcher) && MONGORY_VALIDATE_PTR(ctx->pool, matcher->explain);
+  if (ctx->pool->error != NULL) {
+    return false;
+  }
   matcher->explain(matcher, ctx);
   return true;
 }
@@ -79,6 +83,10 @@ static bool mongory_matcher_explain_cb(mongory_matcher *matcher, mongory_matcher
  * @param temp_pool A temporary memory pool for allocating the explanation string(s).
  */
 void mongory_matcher_explain(mongory_matcher *matcher, mongory_memory_pool *temp_pool) {
+  MONGORY_VALIDATE_PTR(temp_pool, matcher) && MONGORY_VALIDATE_PTR(temp_pool, matcher->traverse);
+  if (temp_pool->error != NULL) {
+    return;
+  }
   mongory_matcher_traverse_context ctx = {
       .pool = temp_pool,
       .count = 0,
@@ -96,20 +104,31 @@ typedef struct mongory_matcher_traced_match_context {
 
 static bool mongory_matcher_traced_match(mongory_matcher *matcher, mongory_value *value) {
   bool matched = matcher->original_match(matcher, value);
-  mongory_memory_pool *pool = matcher->trace_stack->pool;
+  mongory_array *trace_stack = matcher->trace_stack;
+  mongory_memory_pool *pool = trace_stack->pool;
+  mongory_value *condition = matcher->condition;
+  MONGORY_VALIDATE_PTR(pool, condition) && MONGORY_VALIDATE_PTR(pool, condition->to_str);
+  MONGORY_VALIDATE_PTR(pool, matcher->name);
+  value && MONGORY_VALIDATE_PTR(pool, value->to_str);
+  if (pool->error != NULL) {
+    return false;
+  }
   char *res = NULL;
   if (mongory_matcher_trace_result_colorful) {
     res = matched ? "\e[30;42mMatched\e[0m" : "\e[30;41mDismatch\e[0m"; // Green for matched, red for mismatch.
   } else {
     res = matched ? "Matched" : "Dismatch";
   }
-  char *cdtn = matcher->condition->to_str(matcher->condition, pool);
-  char *rcd = value == NULL ? "Nothing" : value->to_str(value, pool);
   char *name = matcher->name;
+  char *cdtn = condition->to_str(condition, pool);
+  char *rcd = value == NULL ? "Nothing" : value->to_str(value, pool);
   char *message;
 
   if (strcmp(name, "Field") == 0) {
     mongory_field_matcher *field_matcher = (mongory_field_matcher *)matcher;
+    if (!MONGORY_VALIDATE_PTR(pool, field_matcher->field)) {
+      return false;
+    }
     char *fd = field_matcher->field;
     message = mongory_string_cpyf(pool, "%s: %s, field: \"%s\", condition: %s, record: %s\n", name, res, fd, cdtn, rcd);
   } else {
@@ -119,7 +138,7 @@ static bool mongory_matcher_traced_match(mongory_matcher *matcher, mongory_value
   mongory_matcher_traced_match_context *trace_result = MG_ALLOC_PTR(pool, mongory_matcher_traced_match_context);
   trace_result->message = message;
   trace_result->level = matcher->trace_level;
-  matcher->trace_stack->push(matcher->trace_stack, mongory_value_wrap_ptr(pool, (void *)trace_result));
+  trace_stack->push(trace_stack, mongory_value_wrap_ptr(pool, (void *)trace_result));
 
   return matched;
 }
@@ -139,20 +158,33 @@ static bool mongory_matcher_disable_trace_cb(mongory_matcher *matcher, mongory_m
 }
 
 static mongory_array *mongory_matcher_traces_sort(mongory_array *self, int level) {
-  mongory_array *sorted_array = mongory_array_new(self->pool);
-  mongory_array *group = mongory_array_new(self->pool);
+  mongory_memory_pool *pool = self->pool;
+  MONGORY_VALIDATE_PTR(pool, self) && MONGORY_VALIDATE_PTR(pool, self->get);
+  if (pool->error != NULL) {
+    return NULL;
+  }
+  mongory_array *sorted_array = mongory_array_new(pool);
+  mongory_array *group = mongory_array_new(pool);
   int total = (int)self->count;
   for (int i = 0; i < total; i++) {
     mongory_value *item = self->get(self, i);
+    MONGORY_VALIDATE_PTR(pool, item) && MONGORY_VALIDATE_PTR(pool, item->data.ptr);
+    if (pool->error != NULL) {
+      return NULL;
+    }
     mongory_matcher_traced_match_context *trace = (mongory_matcher_traced_match_context *)item->data.ptr;
     if (trace->level == level) {
       sorted_array->push(sorted_array, item);
       mongory_array *sorted_group = mongory_matcher_traces_sort(group, level + 1);
+      MONGORY_VALIDATE_PTR(pool, sorted_group) && MONGORY_VALIDATE_PTR(pool, sorted_group->get);
+      if (pool->error != NULL) {
+        return NULL;
+      }
       int sorted_group_total = (int)sorted_group->count;
       for (int j = 0; j < sorted_group_total; j++) {
         sorted_array->push(sorted_array, sorted_group->get(sorted_group, j));
       }
-      group = mongory_array_new(self->pool);
+      group = mongory_array_new(pool);
     } else {
       group->push(group, item);
     }
@@ -161,6 +193,10 @@ static mongory_array *mongory_matcher_traces_sort(mongory_array *self, int level
 }
 
 void mongory_matcher_enable_trace(mongory_matcher *matcher, mongory_memory_pool *temp_pool) {
+  MONGORY_VALIDATE_PTR(temp_pool, matcher) && MONGORY_VALIDATE_PTR(temp_pool, matcher->traverse);
+  if (temp_pool->error != NULL) {
+    return;
+  }
   mongory_array *trace_stack = mongory_array_new(temp_pool);
   mongory_matcher_traverse_context ctx = {
       .pool = temp_pool,
@@ -174,6 +210,10 @@ void mongory_matcher_enable_trace(mongory_matcher *matcher, mongory_memory_pool 
 }
 
 void mongory_matcher_disable_trace(mongory_matcher *matcher) {
+  MONGORY_VALIDATE_PTR(matcher->pool, matcher) && MONGORY_VALIDATE_PTR(matcher->pool, matcher->traverse);
+  if (matcher->pool->error != NULL) {
+    return;
+  }
   mongory_matcher_traverse_context ctx = {
       .level = 0,
       .count = 0,
@@ -200,6 +240,10 @@ void mongory_matcher_print_trace(mongory_matcher *matcher) {
 }
 
 bool mongory_matcher_trace(mongory_matcher *matcher, mongory_value *value) {
+  MONGORY_VALIDATE_PTR(value->pool, matcher) && MONGORY_VALIDATE_PTR(value->pool, matcher->match);
+  if (value->pool->error != NULL) {
+    return false;
+  }
   mongory_matcher_enable_trace(matcher, value->pool);
   bool matched = matcher->match(matcher, value);
   mongory_matcher_print_trace(matcher);

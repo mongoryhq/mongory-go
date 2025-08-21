@@ -468,20 +468,31 @@ mongory_table *mongory_table_nested_wrap(mongory_memory_pool *pool, int argc, ..
   va_start(args, argc);
   for (int i = 0; i < argc; i++) {
     char *key = va_arg(args, char *);
+    MONGORY_VALIDATE_PTR(pool, key);
     mongory_value *value = va_arg(args, mongory_value *);
+    MONGORY_VALIDATE_PTR(pool, value);
     mongory_table_set(table, key, value);
   }
   va_end(args);
+  if (pool->error != NULL) {
+    return NULL;
+  }
   return table;
 }
 
 static inline bool mongory_table_merge_cb(char *key, mongory_value *value, void *acc) {
   mongory_table *table = (mongory_table *)acc;
-  mongory_table_set(table, key, value);
+  table->set(table, key, value);
   return true;
 }
 
 mongory_table *mongory_table_merge(mongory_table *table, mongory_table *other) {
-  mongory_table_each_pair(other, table, mongory_table_merge_cb);
+  mongory_memory_pool *pool = other->pool;
+  MONGORY_VALIDATE_PTR(pool, other->each);
+  MONGORY_VALIDATE_PTR(pool, table->set);
+  if (pool->error != NULL) {
+    return NULL;
+  }
+  other->each(other, table, mongory_table_merge_cb);
   return table;
 }

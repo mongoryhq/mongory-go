@@ -2,6 +2,7 @@
 #define MONGORY_UTILS_H
 
 #include "mongory-core/foundations/memory_pool.h"
+#include "mongory-core/foundations/value.h"
 #include <stdbool.h>
 
 /**
@@ -50,4 +51,20 @@ char *mongory_string_cpy(mongory_memory_pool *pool, char *str);
 char *mongory_string_cpyf(mongory_memory_pool *pool, char *format, ...);
 
 double mongory_log(double x, double base);
+
+bool mongory_validate_ptr(mongory_memory_pool *pool, char *name, void *ptr, char *file, int line);
+#define MONGORY_VALIDATE_PTR(pool, ptr) mongory_validate_ptr(pool, #ptr, ptr, __FILE__, __LINE__)
+
+bool mongory_validate_table(mongory_memory_pool *pool, char *name, mongory_value *value, char *file, int line);
+#define MONGORY_VALIDATE_TABLE(pool, value) mongory_validate_table(pool, #value, value, __FILE__, __LINE__)
+
+bool mongory_validate_array(mongory_memory_pool *pool, char *name, mongory_value *value, char *file, int line);
+#define MONGORY_VALIDATE_ARRAY(pool, value) mongory_validate_array(pool, #value, value, __FILE__, __LINE__)
+
+bool mongory_validate_string(mongory_memory_pool *pool, char *name, mongory_value *value, char *file, int line);
+#define MONGORY_VALIDATE_STRING(pool, value) mongory_validate_string(pool, #value, value, __FILE__, __LINE__)
+
+bool mongory_validate_number(mongory_memory_pool *pool, char *name, mongory_value *value, char *file, int line);
+#define MONGORY_VALIDATE_NUMBER(pool, value) mongory_validate_number(pool, #value, value, __FILE__, __LINE__)
+
 #endif // MONGORY_UTILS_H
