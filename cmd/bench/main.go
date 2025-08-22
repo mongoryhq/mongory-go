@@ -134,7 +134,7 @@ func main() {
 	})
 
 	// Matcher simple query (reuse matcher across runs)
-	matcherSimple, err := mongory.NewMatcher(map[string]any{
+	matcherSimple, err := mongory.NewCMatcher(map[string]any{
 		"age": map[string]any{"$gte": 18},
 	}, nil)
 	if err != nil {
@@ -162,7 +162,7 @@ func main() {
 	})
 
 	// Matcher complex query: $or of age>=18 or status==active (reuse matcher)
-	matcherComplex, err := mongory.NewMatcher(map[string]any{
+	matcherComplex, err := mongory.NewCMatcher(map[string]any{
 		"$or": []any{
 			map[string]any{"age": map[string]any{"$gte": 18}},
 			map[string]any{"status": "active"},
