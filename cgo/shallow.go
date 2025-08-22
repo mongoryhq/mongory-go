@@ -6,9 +6,6 @@ package cgo
 #include <stdlib.h>
 #include <stdint.h>
 
-extern void* go_handle_to_ptr(uintptr_t h);
-extern uintptr_t go_ptr_to_handle(void* p);
-
 // ----- Array bridge -----
 
 typedef struct go_mongory_array {
@@ -78,7 +75,7 @@ func NewShallowArray(pool *MemoryPool, values []any) *ShallowArray {
 	h := rcgo.NewHandle(values)
 	pool.trackHandle(h)
 	arr := &ShallowArray{
-		CPoint: C.mongory_shallow_array_new(pool.CPoint, C.go_handle_to_ptr(C.uintptr_t(uintptr(h)))),
+		CPoint: C.mongory_shallow_array_new(pool.CPoint, handleToPtr(h)),
 		target: values,
 		pool:   pool,
 	}
@@ -93,14 +90,14 @@ func (a *ShallowArray) Get(index int) *Value {
 //export go_shallow_array_get
 func go_shallow_array_get(a *C.go_mongory_array, index C.size_t) *C.mongory_value {
 	pool := MemoryPool{CPoint: a.base.pool}
-	h := rcgo.Handle(C.go_ptr_to_handle(a.go_array))
+	h := ptrToHandle(a.go_array)
 	target := h.Value().([]any)
 	return pool.ValueConvert(target[int(index)]).CPoint
 }
 
 //export go_shallow_array_to_string
 func go_shallow_array_to_string(a *C.go_mongory_array) *C.char {
-	h := rcgo.Handle(C.go_ptr_to_handle(a.go_array))
+	h := ptrToHandle(a.go_array)
 	target := h.Value().([]any)
 	return C.CString(fmt.Sprintf("%v", target)) // TODO: implement
 }
@@ -117,7 +114,7 @@ func NewShallowTable(pool *MemoryPool, values map[string]any) *ShallowTable {
 	h := rcgo.NewHandle(values)
 	pool.trackHandle(h)
 	t := &ShallowTable{
-		CPoint: C.mongory_shallow_table_new(pool.CPoint, C.go_handle_to_ptr(C.uintptr_t(uintptr(h)))),
+		CPoint: C.mongory_shallow_table_new(pool.CPoint, handleToPtr(h)),
 		target: values,
 		pool:   pool,
 	}
@@ -132,14 +129,14 @@ func (t *ShallowTable) Get(key string) *Value {
 //export go_shallow_table_get
 func go_shallow_table_get(a *C.go_mongory_table, key *C.char) *C.mongory_value {
 	pool := MemoryPool{CPoint: a.base.pool}
-	h := rcgo.Handle(C.go_ptr_to_handle(a.go_table))
+	h := ptrToHandle(a.go_table)
 	target := h.Value().(map[string]any)
 	return pool.ValueConvert(target[C.GoString(key)]).CPoint
 }
 
 //export go_shallow_table_to_string
 func go_shallow_table_to_string(t *C.go_mongory_table) *C.char {
-	h := rcgo.Handle(C.go_ptr_to_handle(t.go_table))
+	h := ptrToHandle(t.go_table)
 	target := h.Value().(map[string]any)
 	return C.CString(fmt.Sprintf("%v", target)) // TODO: implement
 }
