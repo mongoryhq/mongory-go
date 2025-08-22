@@ -15,6 +15,8 @@ type GCStat struct {
 	After  runtime.MemStats
 }
 
+type Record map[string]any
+
 func printGC(stat GCStat) {
 	created := int64(stat.After.Mallocs - stat.Before.Mallocs)
 	freed := int64(stat.After.Frees - stat.Before.Frees)
@@ -24,8 +26,8 @@ func printGC(stat GCStat) {
 	fmt.Printf("Net alive: %d\n", alive)
 }
 
-func genRecords(size int) []map[string]any {
-	records := make([]map[string]any, size)
+func genRecords(size int) []Record {
+	records := make([]Record, size)
 	for i := 0; i < size; i++ {
 		var age any
 		if rand.IntN(2) == 0 { // nil or number
@@ -37,7 +39,7 @@ func genRecords(size int) []map[string]any {
 		if rand.IntN(2) == 0 {
 			status = "active"
 		}
-		records[i] = map[string]any{
+		records[i] = Record{
 			"age":    age,
 			"status": status,
 		}
@@ -45,7 +47,7 @@ func genRecords(size int) []map[string]any {
 	return records
 }
 
-func countSimpleQuery(records []map[string]any) int {
+func countSimpleQuery(records []Record) int {
 	n := 0
 	for _, r := range records {
 		v, ok := r["age"]
@@ -70,7 +72,7 @@ func countSimpleQuery(records []map[string]any) int {
 	return n
 }
 
-func countComplexQuery(records []map[string]any) int {
+func countComplexQuery(records []Record) int {
 	n := 0
 	for _, r := range records {
 		agev, hasAge := r["age"]

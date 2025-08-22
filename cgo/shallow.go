@@ -60,6 +60,7 @@ static void mongory_shallow_table_set_count(mongory_table *a, size_t count) {
 import "C"
 import (
 	"fmt"
+	"reflect"
 	rcgo "runtime/cgo"
 )
 
@@ -67,11 +68,11 @@ import (
 
 type ShallowArray struct {
 	CPoint *C.mongory_array
-	target []any
+	target any
 	pool   *MemoryPool
 }
 
-func NewShallowArray(pool *MemoryPool, values []any) *ShallowArray {
+func NewShallowArray(pool *MemoryPool, values any) *ShallowArray {
 	h := rcgo.NewHandle(values)
 	pool.trackHandle(h)
 	arr := &ShallowArray{
@@ -79,26 +80,40 @@ func NewShallowArray(pool *MemoryPool, values []any) *ShallowArray {
 		target: values,
 		pool:   pool,
 	}
-	C.mongory_shallow_array_set_count(arr.CPoint, C.size_t(len(values)))
+	rv := reflect.ValueOf(values)
+	var count int
+	if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+		count = rv.Len()
+	}
+	C.mongory_shallow_array_set_count(arr.CPoint, C.size_t(count))
 	return arr
 }
 
 func (a *ShallowArray) Get(index int) *Value {
-	return a.pool.ValueConvert(a.target[index])
+	rv := reflect.ValueOf(a.target)
+	if !rv.IsValid() || rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return a.pool.ValueConvert(nil)
+	}
+	return a.pool.ValueConvert(rv.Index(index).Interface())
 }
 
 //export go_shallow_array_get
 func go_shallow_array_get(a *C.go_mongory_array, index C.size_t) *C.mongory_value {
 	pool := MemoryPool{CPoint: a.base.pool}
 	h := ptrToHandle(a.go_array)
-	target := h.Value().([]any)
-	return pool.ValueConvert(target[int(index)]).CPoint
+	target := h.Value()
+	rv := reflect.ValueOf(target)
+	var iv any
+	if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+		iv = rv.Index(int(index)).Interface()
+	}
+	return pool.ValueConvert(iv).CPoint
 }
 
 //export go_shallow_array_to_string
 func go_shallow_array_to_string(a *C.go_mongory_array) *C.char {
 	h := ptrToHandle(a.go_array)
-	target := h.Value().([]any)
+	target := h.Value()
 	return C.CString(fmt.Sprintf("%v", target)) // TODO: implement
 }
 
@@ -106,11 +121,11 @@ func go_shallow_array_to_string(a *C.go_mongory_array) *C.char {
 
 type ShallowTable struct {
 	CPoint *C.mongory_table
-	target map[string]any
+	target any
 	pool   *MemoryPool
 }
 
-func NewShallowTable(pool *MemoryPool, values map[string]any) *ShallowTable {
+func NewShallowTable(pool *MemoryPool, values any) *ShallowTable {
 	h := rcgo.NewHandle(values)
 	pool.trackHandle(h)
 	t := &ShallowTable{
@@ -118,25 +133,47 @@ func NewShallowTable(pool *MemoryPool, values map[string]any) *ShallowTable {
 		target: values,
 		pool:   pool,
 	}
-	C.mongory_shallow_table_set_count(t.CPoint, C.size_t(len(values)))
+	// 設定項目數量（僅支援 map）
+	rv := reflect.ValueOf(values)
+	var count int
+	if rv.IsValid() && rv.Kind() == reflect.Map {
+		count = rv.Len()
+	}
+	C.mongory_shallow_table_set_count(t.CPoint, C.size_t(count))
 	return t
 }
 
 func (t *ShallowTable) Get(key string) *Value {
-	return t.pool.ValueConvert(t.target[key])
+	rv := reflect.ValueOf(t.target)
+	if !rv.IsValid() || rv.Kind() != reflect.Map {
+		return t.pool.ValueConvert(nil)
+	}
+	v := rv.MapIndex(reflect.ValueOf(key))
+	if !v.IsValid() {
+		return t.pool.ValueConvert(nil)
+	}
+	return t.pool.ValueConvert(v.Interface())
 }
 
 //export go_shallow_table_get
 func go_shallow_table_get(a *C.go_mongory_table, key *C.char) *C.mongory_value {
 	pool := MemoryPool{CPoint: a.base.pool}
 	h := ptrToHandle(a.go_table)
-	target := h.Value().(map[string]any)
-	return pool.ValueConvert(target[C.GoString(key)]).CPoint
+	target := h.Value()
+	rv := reflect.ValueOf(target)
+	var iv any
+	if rv.IsValid() && rv.Kind() == reflect.Map {
+		v := rv.MapIndex(reflect.ValueOf(C.GoString(key)))
+		if v.IsValid() {
+			iv = v.Interface()
+		}
+	}
+	return pool.ValueConvert(iv).CPoint
 }
 
 //export go_shallow_table_to_string
 func go_shallow_table_to_string(t *C.go_mongory_table) *C.char {
 	h := ptrToHandle(t.go_table)
-	target := h.Value().(map[string]any)
+	target := h.Value()
 	return C.CString(fmt.Sprintf("%v", target)) // TODO: implement
 }
