@@ -18,8 +18,7 @@ type CMatcher interface {
 }
 
 func NewCMatcher(condition map[string]any, context *any) (CMatcher, error) {
-	pool := cgo.NewMemoryPool()
-	matcher, err := cgo.NewMatcher(pool, condition, context)
+	matcher, err := cgo.NewMatcher(condition, context)
 	if err != nil {
 		return nil, err
 	}

@@ -8,7 +8,7 @@ package cgo
 import "C"
 import (
 	"errors"
-	"unsafe"
+	rcgo "runtime/cgo"
 )
 
 type Matcher struct {
@@ -21,13 +21,15 @@ type Matcher struct {
 	traceEnabled bool
 }
 
-func NewMatcher(pool *MemoryPool, condition map[string]any, context *any) (*Matcher, error) {
+func NewMatcher(condition map[string]any, context *any) (*Matcher, error) {
+	pool := NewMemoryPool()
 	conditionValue := pool.ConditionConvert(condition)
 	if conditionValue == nil {
 		return nil, errors.New(pool.GetError())
 	}
-	scratchPool := NewMemoryPool()
-	cpoint := C.mongory_matcher_new(pool.CPoint, conditionValue.CPoint, unsafe.Pointer(context))
+	h := rcgo.NewHandle(context)
+	pool.trackHandle(h)
+	cpoint := C.mongory_matcher_new(pool.CPoint, conditionValue.CPoint, handleToPtr(h))
 	if cpoint == nil {
 		return nil, errors.New(pool.GetError())
 	}
@@ -36,7 +38,7 @@ func NewMatcher(pool *MemoryPool, condition map[string]any, context *any) (*Matc
 		condition:    &condition,
 		context:      context,
 		pool:         pool,
-		scratchPool:  scratchPool,
+		scratchPool:  NewMemoryPool(),
 		tracePool:    nil,
 		traceEnabled: false,
 	}, nil
