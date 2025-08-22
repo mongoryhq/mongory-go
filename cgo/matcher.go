@@ -43,33 +43,33 @@ func NewMatcher(pool *MemoryPool, condition map[string]any, context *any) (*Matc
 }
 
 func (m *Matcher) Match(value any) (bool, error) {
+	defer m.scratchPool.Reset()
 	convertedValue := m.scratchPool.ValueConvert(value)
 	if convertedValue == nil {
 		return false, errors.New(m.scratchPool.GetError())
 	}
 	result := bool(C.mongory_matcher_match(m.CPoint, convertedValue.CPoint))
-	m.scratchPool.Reset()
 
 	return result, nil
 }
 
 func (m *Matcher) Explain() error {
+	defer m.scratchPool.Reset()
 	C.mongory_matcher_explain(m.CPoint, m.scratchPool.CPoint)
 	if m.scratchPool.GetError() != "" {
 		return errors.New(m.scratchPool.GetError())
 	}
-	m.scratchPool.Reset()
 	return nil
 }
 
 func (m *Matcher) Trace(value any) (bool, error) {
 	tracePool := NewMemoryPool()
+	defer tracePool.Free()
 	convertedValue := tracePool.ValueConvert(value)
 	if convertedValue == nil {
 		return false, errors.New(tracePool.GetError())
 	}
 	result := bool(C.mongory_matcher_trace(m.CPoint, convertedValue.CPoint))
-	tracePool.Free()
 	return result, nil
 }
 
