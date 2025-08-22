@@ -6,7 +6,7 @@ import (
 	"github.com/mongoryhq/mongory-go/cgo"
 )
 
-type Matcher interface {
+type CMatcher interface {
 	Match(value any) (bool, error)
 	Explain() error
 	Trace(value any) (bool, error)
@@ -17,7 +17,7 @@ type Matcher interface {
 	GetContext() *any
 }
 
-func NewMatcher(condition map[string]any, context *any) (Matcher, error) {
+func NewCMatcher(condition map[string]any, context *any) (CMatcher, error) {
 	pool := cgo.NewMemoryPool()
 	matcher, err := cgo.NewMatcher(pool, condition, context)
 	if err != nil {

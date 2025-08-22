@@ -7,7 +7,7 @@ import (
 )
 
 func TestBasic(t *testing.T) {
-	matcher, err := NewMatcher(map[string]any{"key1": "hello"}, nil)
+	matcher, err := NewCMatcher(map[string]any{"key1": "hello"}, nil)
 	if err != nil {
 		t.Fatalf("NewMatcher failed: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestBasic(t *testing.T) {
 }
 
 func TestTrace(t *testing.T) {
-	matcher, err := NewMatcher(map[string]any{"key2": "hello"}, nil)
+	matcher, err := NewCMatcher(map[string]any{"key2": "hello"}, nil)
 	if err != nil {
 		t.Fatalf("NewMatcher failed: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestTrace(t *testing.T) {
 }
 
 func TestExplain(t *testing.T) {
-	matcher, err := NewMatcher(map[string]any{
+	matcher, err := NewCMatcher(map[string]any{
 		"age": map[string]any{
 			"$gt": 18,
 			"$lt": 30,
@@ -60,7 +60,7 @@ func TestExplain(t *testing.T) {
 }
 
 func TestInvalidCondition(t *testing.T) {
-	_, err := NewMatcher(map[string]any{
+	_, err := NewCMatcher(map[string]any{
 		"$and": "hello",
 	}, nil)
 	if err == nil {
