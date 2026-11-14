@@ -55,3 +55,16 @@ func MustNew(condition any) *Query {
 func (q *Query) Match(record any) bool {
 	return q.tree.Match(record)
 }
+
+// Filter returns the records matching q, in order, as a new slice; records is
+// not modified. It returns nil when nothing matches. T is any record type
+// Match accepts, such as bson.M or a struct.
+func Filter[T any](records []T, q *Query) []T {
+	var out []T
+	for _, r := range records {
+		if q.Match(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}

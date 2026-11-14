@@ -211,3 +211,43 @@ func TestQueryDoesNotMutateCondition(t *testing.T) {
 		t.Fatalf("condition mutated: %#v", cond)
 	}
 }
+
+func TestFilter(t *testing.T) {
+	q := mongory.MustNew(M{"age": M{"$gte": 18}})
+
+	t.Run("maps keep order and input", func(t *testing.T) {
+		records := []M{{"age": 20}, {"age": 10}, {"age": 30}}
+		got := mongory.Filter(records, q)
+		if len(got) != 2 || got[0]["age"] != 20 || got[1]["age"] != 30 {
+			t.Fatalf("Filter = %v", got)
+		}
+		if len(records) != 3 || records[1]["age"] != 10 {
+			t.Fatalf("input modified: %v", records)
+		}
+	})
+
+	t.Run("defined map type", func(t *testing.T) {
+		type doc map[string]any // like bson.M
+		got := mongory.Filter([]doc{{"age": 18}, {"age": 17}}, q)
+		if len(got) != 1 || got[0]["age"] != 18 {
+			t.Fatalf("Filter = %v", got)
+		}
+	})
+
+	t.Run("struct pointers", func(t *testing.T) {
+		a, b := &person{Age: 40}, &person{Age: 5}
+		got := mongory.Filter([]*person{a, b, nil}, q)
+		if len(got) != 1 || got[0] != a {
+			t.Fatalf("Filter = %v", got)
+		}
+	})
+
+	t.Run("no match returns nil", func(t *testing.T) {
+		if got := mongory.Filter([]person{{Age: 1}}, q); got != nil {
+			t.Fatalf("Filter = %v, want nil", got)
+		}
+		if got := mongory.Filter[M](nil, q); got != nil {
+			t.Fatalf("Filter(nil) = %v, want nil", got)
+		}
+	})
+}
