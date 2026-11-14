@@ -15,8 +15,9 @@ import (
 //
 //	MONGORY_SPEC_DIR=../mongory-spec go test -run TestConformance ./...
 
-// conformanceDirs lists the fixture groups the pure Go engine supports so far.
-var conformanceDirs = []string{"field"}
+var conformanceDirs = []string{
+	"array", "compare", "composite", "errors", "existance", "field", "inclusion", "regex",
+}
 
 type specSuite struct {
 	Description string         `json:"description"`

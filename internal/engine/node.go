@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,7 +76,7 @@ func sortByPriority(ms []matcher) {
 
 // buildHashCondition ANDs one matcher per key: registered operators build
 // themselves, an unknown "$" key is rejected as MongoDB does, and any other
-// key is a field lookup.
+// key is a field lookup. "$options" is consumed by its sibling "$regex".
 func buildHashCondition(condition map[string]any) (matcher, error) {
 	children := make([]matcher, 0, len(condition))
 	for _, key := range slices.Sorted(maps.Keys(condition)) {
@@ -85,6 +86,13 @@ func buildHashCondition(condition map[string]any) (matcher, error) {
 		)
 		build, isOperator := operators[key]
 		switch {
+		case key == "$options":
+			if _, ok := condition["$regex"]; ok {
+				continue
+			}
+			err = invalidCondition("$options needs a sibling $regex")
+		case key == "$regex":
+			child, err = buildRegex(condition[key], condition["$options"])
 		case isOperator:
 			child, err = build(condition[key])
 		case strings.HasPrefix(key, "$"):
@@ -123,6 +131,8 @@ func buildLiteral(condition any) (*literalMatcher, error) {
 	switch c := condition.(type) {
 	case map[string]any:
 		dispatched, err = buildHashCondition(c)
+	case *regexp.Regexp:
+		dispatched = regexMatcher{re: c}
 	case nil:
 		dispatched = nullMatcher{}
 	default:
@@ -221,6 +231,8 @@ func buildArrayRecord(condition any) (matcher, error) {
 	switch c := condition.(type) {
 	case map[string]any:
 		child, err = buildHashCondition(splitArrayCondition(c))
+	case *regexp.Regexp:
+		child, err = buildElemMatch(map[string]any{"$regex": c})
 	default:
 		child, err = buildElemMatch(map[string]any{"$eq": c})
 	}
@@ -239,7 +251,8 @@ func buildArrayRecord(condition any) (matcher, error) {
 var elementOperators = map[string]bool{"$gt": true, "$gte": true, "$lt": true, "$lte": true, "$regex": true}
 
 // splitArrayCondition keeps index keys and array-level operators on the array
-// itself and groups everything else into an implicit $elemMatch.
+// itself and groups everything else (including "$options") into an implicit
+// $elemMatch.
 func splitArrayCondition(condition map[string]any) map[string]any {
 	parsed := map[string]any{}
 	elem := map[string]any{}

@@ -104,9 +104,21 @@ func normalizeReflect(rv reflect.Value) any {
 		}
 		return out
 	case reflect.Struct:
+		if isRegexStruct(rv.Type()) {
+			return map[string]any{"$regex": rv.Field(0).String(), "$options": rv.Field(1).String()}
+		}
 		return structToMap(rv)
 	}
 	return rv.Interface()
+}
+
+// isRegexStruct recognizes BSON regex values such as primitive.Regex:
+// a struct of exactly {Pattern string; Options string}. They become a
+// {"$regex", "$options"} condition.
+func isRegexStruct(t reflect.Type) bool {
+	return t.NumField() == 2 &&
+		t.Field(0).Name == "Pattern" && t.Field(0).Type.Kind() == reflect.String &&
+		t.Field(1).Name == "Options" && t.Field(1).Type.Kind() == reflect.String
 }
 
 func sliceToAny(rv reflect.Value) []any {

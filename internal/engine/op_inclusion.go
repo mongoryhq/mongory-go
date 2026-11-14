@@ -1,0 +1,47 @@
+package engine
+
+func init() {
+	register("$in", func(c any) (matcher, error) { return buildIn("$in", c, false) })
+	register("$nin", func(c any) (matcher, error) { return buildIn("$nin", c, true) })
+}
+
+// inMatcher matches a value equal to any listed item; an array value matches
+// when it shares at least one element with the list. $nin negates it, so a
+// missing field matches $nin but never $in.
+type inMatcher struct {
+	items  []any
+	negate bool
+}
+
+func buildIn(operator string, condition any, negate bool) (matcher, error) {
+	items, ok := condition.([]any)
+	if !ok {
+		return nil, invalidCondition("%s needs an array, got %T", operator, condition)
+	}
+	return inMatcher{items: items, negate: negate}, nil
+}
+
+func (m inMatcher) match(record any) bool {
+	found := false
+	if arr, ok := record.([]any); ok {
+		for _, e := range arr {
+			if found = m.contains(e); found {
+				break
+			}
+		}
+	} else {
+		found = m.contains(record)
+	}
+	return found != m.negate
+}
+
+func (m inMatcher) contains(v any) bool {
+	for _, item := range m.items {
+		if valuesEqual(v, item) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m inMatcher) priority() int { return 2 + len(m.items)/8 }

@@ -3,6 +3,8 @@ package mongory_test
 import (
 	"encoding/json"
 	"errors"
+	"math"
+	"regexp"
 	"testing"
 	"time"
 
@@ -52,9 +54,13 @@ type (
 		Key   string
 		Value any
 	}
-	bsonD    []bsonE
-	objectID [12]byte
-	dateTime int64
+	bsonD     []bsonE
+	objectID  [12]byte
+	dateTime  int64
+	bsonRegex struct {
+		Pattern string
+		Options string
+	}
 )
 
 func (d dateTime) Time() time.Time { return time.UnixMilli(int64(d)).UTC() }
@@ -146,6 +152,35 @@ func TestQueryMatch(t *testing.T) {
 		{"ObjectID inequality", M{"_id": oid}, M{"_id": objectID{9}}, false},
 		{"ObjectID is not an array", M{"_id.0": 1}, M{"_id": oid}, false},
 		{"DateTime equals time.Time", M{"at": createdAt}, M{"at": dateTime(createdAt.UnixMilli())}, true},
+		{"$gt int vs float exact", M{"n": M{"$gt": 9007199254740992.0}}, M{"n": 9007199254740993}, true},
+		{"$lt float vs int exact", M{"n": M{"$lt": 9007199254740993}}, M{"n": 9007199254740992.0}, true},
+		{"$lt int vs fractional float", M{"n": M{"$lt": 2.5}}, M{"n": 2}, true},
+		{"$gte float vs equal int", M{"n": M{"$gte": 2.0}}, M{"n": 2}, true},
+		{"$gt NaN never matches", M{"n": M{"$gt": 1}}, M{"n": math.NaN()}, false},
+		{"$lte NaN never matches", M{"n": M{"$lte": math.NaN()}}, M{"n": 1}, false},
+		{"$gt bool incomparable", M{"b": M{"$gt": false}}, M{"b": true}, false},
+		{"$gt time", M{"at": M{"$gt": createdAt}}, M{"at": createdAt.Add(time.Second)}, true},
+		{"$lt DateTime vs time", M{"at": M{"$lt": createdAt}}, M{"at": dateTime(createdAt.UnixMilli() - 1)}, true},
+		{"$gt array implicit elemMatch", M{"xs": M{"$gt": 5}}, M{"xs": []int{1, 9}}, true},
+		{"$ne missing", M{"a": M{"$ne": 1}}, M{}, true},
+		{"$in typed slice condition", M{"n": M{"$in": []int{1, 2}}}, M{"n": 2.0}, true},
+		{"$in missing never matches", M{"n": M{"$in": A{nil}}}, M{}, false},
+		{"$nin missing matches", M{"n": M{"$nin": A{1}}}, M{}, true},
+		{"$exists false on missing", M{"a": M{"$exists": false}}, M{}, true},
+		{"$present zero is present", M{"a": M{"$present": true}}, M{"a": 0}, true},
+		{"$present empty struct slice", M{"tags": M{"$present": false}}, person{Tags: []string{}}, true},
+		{"$not missing field", M{"a": M{"$not": M{"$gt": 1}}}, M{}, true},
+		{"$and of $or", M{"$and": A{M{"$or": A{M{"a": 1}, M{"b": 1}}}, M{"c": 1}}}, M{"b": 1, "c": 1}, true},
+		{"$every typed slice", M{"xs": M{"$every": M{"$gte": 1}}}, M{"xs": []int{1, 2}}, true},
+		{"$size typed slice", M{"xs": M{"$size": 2}}, M{"xs": []string{"a", "b"}}, true},
+		{"operator in dot path", M{"xs.$size.$gte": 2}, M{"xs": A{1, 2, 3}}, true},
+		{"$regex with $options", M{"s": M{"$regex": "^ab", "$options": "i"}}, M{"s": "ABC"}, true},
+		{"$regex without $options is case sensitive", M{"s": M{"$regex": "^ab"}}, M{"s": "ABC"}, false},
+		{"$regex $options on array implicit elemMatch", M{"xs": M{"$regex": "^ab", "$options": "i"}}, M{"xs": A{"x", "ABx"}}, true},
+		{"*regexp.Regexp literal", M{"s": regexp.MustCompile("b+")}, M{"s": "abbc"}, true},
+		{"*regexp.Regexp literal on array", M{"xs": regexp.MustCompile("^b")}, M{"xs": A{"a", "bc"}}, true},
+		{"BSON regex literal", M{"s": bsonRegex{Pattern: "^ab", Options: "i"}}, M{"s": "AB"}, true},
+		{"$regex ignores non-strings", M{"s": M{"$regex": "1"}}, M{"s": 1}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
