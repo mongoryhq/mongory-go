@@ -1,0 +1,52 @@
+name: mongory-spec conformance
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      spec_ref:
+        description: "mongory-spec ref (branch, tag, or SHA) to test against"
+        required: false
+        default: "main"
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Submodules are still needed: the package imports the legacy CGO binding
+    # until it is removed.
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Checkout mongory-spec
+      uses: actions/checkout@v4
+      with:
+        repository: mongoryhq/mongory-spec
+        ref: ${{ github.event.inputs.spec_ref || 'main' }}
+        path: mongory-spec
+
+    - name: Show mongory-spec revision
+      working-directory: mongory-spec
+      run: echo "mongory-spec $(cat VERSION) @ $(git rev-parse --short HEAD)"
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Run conformance tests
+      env:
+        MONGORY_SPEC_DIR: ${{ github.workspace }}/mongory-spec
+      run: go test -race -run 'TestConformance' -v ./... 2>&1 | tee conformance.log # default bash shell runs with pipefail
+
+    - name: Fail if conformance was skipped
+      run: |
+        if grep -q 'MONGORY_SPEC_DIR not set' conformance.log; then
+          echo "conformance tests were skipped" >&2
+          exit 1
+        fi
