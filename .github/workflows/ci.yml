@@ -7,27 +7,94 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  lint:
+    name: Format & Vet
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-
-      - name: Build
-        run: go build ./...
-
-      - name: Vet
+          go-version: '1.26'
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files need gofmt:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+      - name: Go Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test ./...
+  test:
+    name: Go ${{ matrix.go-version }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            go-version: '1.22'
+          - os: ubuntu-latest
+            go-version: '1.23'
+          - os: ubuntu-latest
+            go-version: '1.24'
+          - os: ubuntu-latest
+            go-version: '1.25'
+          - os: ubuntu-latest
+            go-version: '1.26'
+          - os: macos-15
+            go-version: '1.22'
+          - os: macos-15
+            go-version: '1.26'
+          - os: windows-latest
+            go-version: '1.22'
+          - os: windows-latest
+            go-version: '1.24'
+          - os: windows-latest
+            go-version: '1.26'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Build (CGO disabled)
+        shell: bash
+        run: CGO_ENABLED=0 go build ./...
+      - name: Test (CGO disabled)
+        shell: bash
+        run: CGO_ENABLED=0 go test -v ./...
+      - name: Race Detector Tests
+        if: runner.os != 'Windows'
+        run: go test -race ./...
 
-
+  cross-compile:
+    name: Cross Compile ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Build target
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...
