@@ -15,31 +15,30 @@ type GCStat struct {
 	After  runtime.MemStats
 }
 
-type Record map[string]any
-
 func printGC(stat GCStat) {
 	created := int64(stat.After.Mallocs - stat.Before.Mallocs)
 	freed := int64(stat.After.Frees - stat.Before.Frees)
-	alive := int64((stat.After.HeapObjects) - (stat.Before.HeapObjects))
+	alive := int64(stat.After.HeapObjects - stat.Before.HeapObjects)
 	fmt.Printf("Created: %d\n", created)
 	fmt.Printf("Freed: %d\n", freed)
 	fmt.Printf("Net alive: %d\n", alive)
 }
 
-func genRecords(size int) []Record {
-	records := make([]Record, size)
+func genRecords(size int) []mongory.M {
+	r := rand.New(rand.NewPCG(1, 2))
+	records := make([]mongory.M, size)
 	for i := 0; i < size; i++ {
 		var age any
-		if rand.IntN(2) == 0 { // nil or number
+		if r.IntN(2) == 0 {
 			age = nil
 		} else {
-			age = rand.IntN(100) + 1 // 1..100
+			age = r.IntN(100) + 1
 		}
 		status := "inactive"
-		if rand.IntN(2) == 0 {
+		if r.IntN(2) == 0 {
 			status = "active"
 		}
-		records[i] = Record{
+		records[i] = mongory.M{
 			"age":    age,
 			"status": status,
 		}
@@ -47,32 +46,21 @@ func genRecords(size int) []Record {
 	return records
 }
 
-func countSimpleQuery(records []Record) int {
+func countSimpleQuery(records []mongory.M) int {
 	n := 0
 	for _, r := range records {
 		v, ok := r["age"]
 		if !ok {
 			continue
 		}
-		switch vv := v.(type) {
-		case int:
-			if vv >= 18 {
-				n++
-			}
-		case int64:
-			if vv >= 18 {
-				n++
-			}
-		case float64:
-			if vv >= 18 {
-				n++
-			}
+		if vv, ok := v.(int); ok && vv >= 18 {
+			n++
 		}
 	}
 	return n
 }
 
-func countComplexQuery(records []Record) int {
+func countComplexQuery(records []mongory.M) int {
 	n := 0
 	for _, r := range records {
 		agev, hasAge := r["age"]
@@ -81,12 +69,7 @@ func countComplexQuery(records []Record) int {
 			continue
 		}
 		cond := false
-		switch vv := agev.(type) {
-		case int:
-			cond = vv >= 18
-		case int64:
-			cond = vv >= 18
-		case float64:
+		if vv, ok := agev.(int); ok {
 			cond = vv >= 18
 		}
 		if cond || statusv == "active" {
@@ -105,24 +88,18 @@ func bench(title string, loops int, fn func()) {
 	for i := 0; i < loops; i++ {
 		start := time.Now()
 		fn()
-		elapsed := time.Since(start)
-		fmt.Println(elapsed)
+		fmt.Println(time.Since(start))
 	}
 	runtime.GC()
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
 	_ = debug.SetGCPercent(old)
-	stat := GCStat{Before: before, After: after}
-	printGC(stat)
+	printGC(GCStat{Before: before, After: after})
 }
 
 func main() {
-	// Ensure native runtime is initialized
-	mongory.Init()
-	defer mongory.Cleanup()
-
-	size := 100_000
-	loops := 5
+	const size = 100_000
+	const loops = 5
 
 	fmt.Printf("Testing with %d records:\n", size)
 	records := genRecords(size)
@@ -130,63 +107,32 @@ func main() {
 	expectedSimple := countSimpleQuery(records)
 	expectedComplex := countComplexQuery(records)
 
-	// Plain Go simple query
 	bench("Simple query (Plain Go)", loops, func() {
 		_ = countSimpleQuery(records)
 	})
 
-	// Matcher simple query (reuse matcher across runs)
-	matcherSimple, err := mongory.NewCMatcher(map[string]any{
-		"age": map[string]any{"$gte": 18},
-	}, nil)
-	if err != nil {
-		panic(err)
-	}
+	simpleMatcher := mongory.MustCompile(mongory.M{"age": mongory.M{"$gte": 18}})
 	bench("Simple query (Mongory Matcher)", loops, func() {
-		cnt := 0
-		for i := range records {
-			ok, err := matcherSimple.Match(records[i])
-			if err != nil {
-				panic(err)
-			}
-			if ok {
-				cnt++
-			}
-		}
+		cnt := mongory.Count(records, simpleMatcher)
 		if cnt != expectedSimple {
 			panic(fmt.Sprintf("count mismatch: got %d want %d", cnt, expectedSimple))
 		}
 	})
 
-	// Plain Go complex query
 	bench("Complex query (Plain Go)", loops, func() {
 		_ = countComplexQuery(records)
 	})
 
-	// Matcher complex query: $or of age>=18 or status==active (reuse matcher)
-	matcherComplex, err := mongory.NewCMatcher(map[string]any{
-		"$or": []any{
-			map[string]any{"age": map[string]any{"$gte": 18}},
-			map[string]any{"status": "active"},
+	complexMatcher := mongory.MustCompile(mongory.M{
+		"$or": mongory.A{
+			mongory.M{"age": mongory.M{"$gte": 18}},
+			mongory.M{"status": "active"},
 		},
-	}, nil)
-	if err != nil {
-		panic(err)
-	}
+	})
 	bench("Complex query (Mongory Matcher)", loops, func() {
-		cnt := 0
-		for i := range records {
-			ok, err := matcherComplex.Match(records[i])
-			if err != nil {
-				panic(err)
-			}
-			if ok {
-				cnt++
-			}
-		}
+		cnt := mongory.Count(records, complexMatcher)
 		if cnt != expectedComplex {
 			panic(fmt.Sprintf("count mismatch: got %d want %d", cnt, expectedComplex))
 		}
 	})
-
 }

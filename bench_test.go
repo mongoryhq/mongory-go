@@ -7,9 +7,7 @@ import (
 	"github.com/mongoryhq/mongory-go"
 )
 
-// Compares the pure Go engine with the legacy CGO matcher on the same data.
-//
-//	go test -run '^$' -bench . -benchmem
+// Run with: go test -run '^$' -bench . -benchmem
 
 const benchSize = 10_000
 
@@ -30,7 +28,6 @@ var (
 	benchTags   = []string{"go", "ruby", "c", "js", "rust", "python"}
 )
 
-// benchData returns the same records as maps and as structs.
 func benchData() ([]M, []benchUser) {
 	r := rand.New(rand.NewPCG(1, 2))
 	maps := make([]M, benchSize)
@@ -67,74 +64,42 @@ func benchData() ([]M, []benchUser) {
 var benchCases = []struct {
 	name      string
 	condition M
-	skipCGO   string // why the legacy CGO binding cannot run this case
 }{
 	{name: "simple", condition: M{"age": M{"$gte": 18}}},
 	{name: "or", condition: M{"$or": A{M{"age": M{"$gte": 18}}, M{"status": "active"}}}},
-	// Nested object instead of "profile.city": the CGO binding does not expand dot paths.
-	{name: "nested_and", condition: M{"profile": M{"city": "Taipei"}, "status": "active", "age": M{"$lt": 40}}},
+	{name: "nested_and", condition: M{"profile.city": "Taipei", "status": "active", "age": M{"$lt": 40}}},
 	{name: "in_array_field", condition: M{"tags": M{"$in": A{"go", "rust"}}}},
-	{name: "regex", condition: M{"name": M{"$regex": "^user[a-f]$"}}, skipCGO: "the CGO binding registers no regex adapter"},
+	{name: "regex", condition: M{"name": M{"$regex": "^user[a-f]$"}}},
 }
 
 func BenchmarkMatch(b *testing.B) {
 	maps, users := benchData()
 	for _, bc := range benchCases {
-		pure := mongory.MustNew(bc.condition)
-		want := countPure(pure, maps)
-		if got := countPure(pure, users); got != want {
+		m := mongory.MustCompile(bc.condition)
+		want := countMatches(m, maps)
+		if got := countMatches(m, users); got != want {
 			b.Fatalf("%s: structs matched %d, maps matched %d", bc.name, got, want)
 		}
 
-		b.Run(bc.name+"/pure_maps", func(b *testing.B) {
-			for b.Loop() {
-				countPure(pure, maps)
+		b.Run(bc.name+"/maps", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				countMatches(m, maps)
 			}
 			reportPerRecord(b)
 		})
-		b.Run(bc.name+"/pure_structs", func(b *testing.B) {
-			for b.Loop() {
-				countPure(pure, users)
-			}
-			reportPerRecord(b)
-		})
-		b.Run(bc.name+"/cgo_maps", func(b *testing.B) {
-			if bc.skipCGO != "" {
-				b.Skip(bc.skipCGO)
-			}
-			legacy, err := mongory.NewCMatcher(bc.condition, nil)
-			if err != nil {
-				b.Fatalf("NewCMatcher: %v", err)
-			}
-			if got := countLegacy(b, legacy, maps); got != want {
-				b.Fatalf("CGO matched %d, pure Go matched %d", got, want)
-			}
-			for b.Loop() {
-				countLegacy(b, legacy, maps)
+		b.Run(bc.name+"/structs", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				countMatches(m, users)
 			}
 			reportPerRecord(b)
 		})
 	}
 }
 
-func countPure[T any](q *mongory.Query, records []T) int {
+func countMatches[T any](m *mongory.Matcher, records []T) int {
 	n := 0
 	for _, r := range records {
-		if q.Match(r) {
-			n++
-		}
-	}
-	return n
-}
-
-func countLegacy(b *testing.B, m mongory.CMatcher, records []M) int {
-	n := 0
-	for _, r := range records {
-		ok, err := m.Match(r)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if ok {
+		if m.Match(r) {
 			n++
 		}
 	}

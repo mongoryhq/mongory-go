@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"regexp"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,7 +67,7 @@ type (
 
 func (d dateTime) Time() time.Time { return time.UnixMilli(int64(d)).UTC() }
 
-func TestQueryMatch(t *testing.T) {
+func TestMatcherMatch(t *testing.T) {
 	alice := person{
 		Base:     Base{ID: 7},
 		Meta:     Meta{Source: "web"},
@@ -184,27 +186,46 @@ func TestQueryMatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			q, err := mongory.New(tt.condition)
+			m, err := mongory.Compile(tt.condition)
 			if err != nil {
-				t.Fatalf("New: %v", err)
+				t.Fatalf("Compile: %v", err)
 			}
-			if got := q.Match(tt.record); got != tt.want {
+			if got := m.Match(tt.record); got != tt.want {
 				t.Errorf("Match(%#v) = %v, want %v", tt.record, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestNewInvalidCondition(t *testing.T) {
-	_, err := mongory.New(M{"xs": M{"$elemMatch": 1}})
+func TestCompileInvalidCondition(t *testing.T) {
+	_, err := mongory.Compile(M{"xs": M{"$elemMatch": 1}})
 	if !errors.Is(err, mongory.ErrInvalidCondition) {
 		t.Fatalf("err = %v, want mongory.ErrInvalidCondition", err)
 	}
 }
 
-func TestQueryDoesNotMutateCondition(t *testing.T) {
+func TestMustCompilePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustCompile did not panic on invalid condition")
+		}
+	}()
+	mongory.MustCompile(M{"$unknown": 1})
+}
+
+func TestOneShotMatch(t *testing.T) {
+	ok, err := mongory.Match(M{"name": "Ann"}, M{"name": "Ann"})
+	if err != nil || !ok {
+		t.Fatalf("Match = (%v, %v), want (true, nil)", ok, err)
+	}
+	if _, err := mongory.Match(M{"$bad": 1}, M{}); !errors.Is(err, mongory.ErrInvalidCondition) {
+		t.Fatalf("err = %v, want ErrInvalidCondition", err)
+	}
+}
+
+func TestMatcherDoesNotMutateCondition(t *testing.T) {
 	cond := M{"a.b": M{"c.d": 1}}
-	if _, err := mongory.New(cond); err != nil {
+	if _, err := mongory.Compile(cond); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := cond["a.b"].(M)["c.d"]; !ok {
@@ -212,12 +233,13 @@ func TestQueryDoesNotMutateCondition(t *testing.T) {
 	}
 }
 
-func TestFilter(t *testing.T) {
-	q := mongory.MustNew(M{"age": M{"$gte": 18}})
+func TestSliceHelpers(t *testing.T) {
+	m := mongory.MustCompile(M{"age": M{"$gte": 18}})
 
-	t.Run("maps keep order and input", func(t *testing.T) {
-		records := []M{{"age": 20}, {"age": 10}, {"age": 30}}
-		got := mongory.Filter(records, q)
+	t.Run("Filter preserves defined slice type and order", func(t *testing.T) {
+		type Docs []M
+		records := Docs{{"age": 20}, {"age": 10}, {"age": 30}}
+		got := mongory.Filter(records, m)
 		if len(got) != 2 || got[0]["age"] != 20 || got[1]["age"] != 30 {
 			t.Fatalf("Filter = %v", got)
 		}
@@ -226,28 +248,115 @@ func TestFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("defined map type", func(t *testing.T) {
-		type doc map[string]any // like bson.M
-		got := mongory.Filter([]doc{{"age": 18}, {"age": 17}}, q)
-		if len(got) != 1 || got[0]["age"] != 18 {
-			t.Fatalf("Filter = %v", got)
+	t.Run("Find Any and Count", func(t *testing.T) {
+		users := []*person{{Name: "Kid", Age: 10}, {Name: "Bob", Age: 25}, nil, {Name: "Cid", Age: 40}}
+		first, ok := mongory.Find(users, m)
+		if !ok || first == nil || first.Name != "Bob" {
+			t.Fatalf("Find = (%v, %v), want Bob", first, ok)
+		}
+		if !mongory.Any(users, m) {
+			t.Fatal("Any = false, want true")
+		}
+		if got := mongory.Count(users, m); got != 2 {
+			t.Fatalf("Count = %d, want 2", got)
 		}
 	})
 
-	t.Run("struct pointers", func(t *testing.T) {
-		a, b := &person{Age: 40}, &person{Age: 5}
-		got := mongory.Filter([]*person{a, b, nil}, q)
-		if len(got) != 1 || got[0] != a {
-			t.Fatalf("Filter = %v", got)
-		}
-	})
-
-	t.Run("no match returns nil", func(t *testing.T) {
-		if got := mongory.Filter([]person{{Age: 1}}, q); got != nil {
+	t.Run("empty and no match", func(t *testing.T) {
+		if got := mongory.Filter([]person{{Age: 1}}, m); got != nil {
 			t.Fatalf("Filter = %v, want nil", got)
 		}
-		if got := mongory.Filter[M](nil, q); got != nil {
+		if got := mongory.Filter[[]M](nil, m); got != nil {
 			t.Fatalf("Filter(nil) = %v, want nil", got)
 		}
+		if first, ok := mongory.Find([]person{{Age: 1}}, m); ok || first.Age != 0 {
+			t.Fatalf("Find = (%v, %v), want zero/false", first, ok)
+		}
+		if mongory.Any([]person{{Age: 1}}, m) {
+			t.Fatal("Any = true, want false")
+		}
+		if got := mongory.Count([]person{{Age: 1}}, m); got != 0 {
+			t.Fatalf("Count = %d, want 0", got)
+		}
 	})
+}
+
+func TestExplainAndTrace(t *testing.T) {
+	m := mongory.MustCompile(M{
+		"$or": A{
+			M{"role": "admin"},
+			M{"tags": M{"$elemMatch": M{"$regex": "^go"}}},
+		},
+		"active": true,
+	})
+
+	explain := m.Explain()
+	if m.String() != explain {
+		t.Fatalf("String() != Explain()")
+	}
+	for _, want := range []string{"And", `Field("active")`, "Eq(true)", "Or", "ElemMatch", "Regex(/^go/)"} {
+		if !strings.Contains(explain, want) {
+			t.Fatalf("Explain missing %q:\n%s", want, explain)
+		}
+	}
+
+	ok, trace := m.Trace(M{"active": false, "role": "admin", "tags": A{"go"}})
+	if ok {
+		t.Fatal("Trace matched unexpectedly")
+	}
+	if !strings.Contains(trace, "[FAIL] And") || !strings.Contains(trace, "[SKIP]") {
+		t.Fatalf("expected short-circuit trace:\n%s", trace)
+	}
+
+	ok, trace = m.Trace(M{"active": true, "role": "user", "tags": A{"rust", "golang"}})
+	if !ok {
+		t.Fatal("Trace did not match")
+	}
+	if !strings.Contains(trace, "[PASS] Or") || !strings.Contains(trace, "[PASS] [1]") {
+		t.Fatalf("expected ElemMatch element trace:\n%s", trace)
+	}
+}
+
+func TestMatcherConcurrentSafety(t *testing.T) {
+	m := mongory.MustCompile(M{
+		"tags":   "go",
+		"scores": M{"$gt": 5, "$lt": 8},
+		"note":   M{"$regex": "^ok", "$options": "i"},
+	})
+
+	const workers = 8
+	const iters = 300
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range iters {
+				doc := M{"tags": A{"ruby", "go"}, "scores": A{3, 6, 9}, "note": "OK-1"}
+				if !m.Match(doc) {
+					errs <- errors.New("expected match")
+					return
+				}
+				if ok, trace := m.Trace(doc); !ok || trace == "" {
+					errs <- errors.New("expected passing trace")
+					return
+				}
+				if m.Explain() == "" {
+					errs <- errors.New("expected explain output")
+					return
+				}
+				if m.Match(M{"tags": "py", "scores": 2, "note": "no"}) {
+					errs <- errors.New("unexpected match")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
 }

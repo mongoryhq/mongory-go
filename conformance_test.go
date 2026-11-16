@@ -61,7 +61,7 @@ func runSpecFile(t *testing.T, file string) {
 	}
 	for _, s := range suites {
 		t.Run(filepath.Base(file)+"/"+s.Description, func(t *testing.T) {
-			q, err := mongory.New(s.Condition)
+			m, err := mongory.Compile(s.Condition)
 			if s.Error {
 				if err == nil {
 					t.Fatalf("expected error for condition %v", s.Condition)
@@ -69,10 +69,10 @@ func runSpecFile(t *testing.T, file string) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("New: %v", err)
+				t.Fatalf("Compile: %v", err)
 			}
 			for _, r := range s.Records {
-				if got := q.Match(r.Data); got != r.Expected {
+				if got := m.Match(r.Data); got != r.Expected {
 					t.Errorf("Match(%v) = %v, want %v", r.Data, got, r.Expected)
 				}
 			}
