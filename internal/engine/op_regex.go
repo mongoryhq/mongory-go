@@ -61,3 +61,11 @@ func (m regexMatcher) priority() int {
 	}
 	return 20
 }
+
+func (m regexMatcher) label() string { return "Regex(/" + m.re.String() + "/)" }
+func (m regexMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+}
+func (m regexMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+}

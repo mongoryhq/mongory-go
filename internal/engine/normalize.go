@@ -2,7 +2,6 @@ package engine
 
 import (
 	"encoding/json"
-	"maps"
 	"math"
 	"reflect"
 	"regexp"
@@ -252,15 +251,22 @@ func structFieldKey(sf reflect.StructField) (name string, inline bool) {
 		tag = string(sf.Tag)
 	}
 	name, opts, _ := strings.Cut(tag, ",")
-	for opt := range strings.SplitSeq(opts, ",") {
-		if opt == "inline" {
-			inline = true
-		}
-	}
+	inline = hasInlineOption(opts)
 	if name == "" {
 		name = strings.ToLower(sf.Name)
 	}
 	return name, inline
+}
+
+func hasInlineOption(opts string) bool {
+	for opts != "" {
+		var opt string
+		opt, opts, _ = strings.Cut(opts, ",")
+		if opt == "inline" {
+			return true
+		}
+	}
+	return false
 }
 
 // convertCondition expands dotted keys into nested conditions (deep-merging
@@ -268,7 +274,7 @@ func structFieldKey(sf reflect.StructField) (name string, inline bool) {
 // order so overlapping keys merge deterministically.
 func convertCondition(condition map[string]any) map[string]any {
 	out := make(map[string]any, len(condition))
-	for _, key := range slices.Sorted(maps.Keys(condition)) {
+	for _, key := range sortedKeys(condition) {
 		deepMerge(out, expandKey(key, convertValue(condition[key])))
 	}
 	return out

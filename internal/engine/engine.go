@@ -2,7 +2,10 @@
 // Only Compile, Tree and ErrInvalidCondition are meant for the facade.
 package engine
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // ErrInvalidCondition is wrapped by every error returned from Compile for a
 // malformed condition.
@@ -34,4 +37,19 @@ func Compile(condition any) (*Tree, error) {
 // Match reports whether record satisfies the compiled condition.
 func (t *Tree) Match(record any) bool {
 	return t.root.match(normalize(record))
+}
+
+// Explain returns a human-readable representation of the compiled matcher tree.
+func (t *Tree) Explain() string {
+	var buf strings.Builder
+	t.root.explain(&buf, "", true, true)
+	return buf.String()
+}
+
+// Trace evaluates record against the compiled condition and returns both the
+// result and a per-node execution trace.
+func (t *Tree) Trace(record any) (bool, string) {
+	var buf strings.Builder
+	matched := t.root.trace(normalize(record), &buf, "", true, true)
+	return matched, buf.String()
 }

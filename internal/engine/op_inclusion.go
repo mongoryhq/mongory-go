@@ -1,5 +1,10 @@
 package engine
 
+import (
+	"fmt"
+	"strings"
+)
+
 func init() {
 	register("$in", func(c any) (matcher, error) { return buildIn("$in", c, false) })
 	register("$nin", func(c any) (matcher, error) { return buildIn("$nin", c, true) })
@@ -45,3 +50,19 @@ func (m inMatcher) contains(v any) bool {
 }
 
 func (m inMatcher) priority() int { return 2 + len(m.items)/8 }
+
+func (m inMatcher) label() string {
+	op := "In"
+	if m.negate {
+		op = "Nin"
+	}
+	return fmt.Sprintf("%s(%s)", op, formatValue(m.items))
+}
+
+func (m inMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+}
+
+func (m inMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+}

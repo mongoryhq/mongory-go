@@ -1,5 +1,7 @@
 package engine
 
+import "strings"
+
 func init() {
 	register("$and", func(c any) (matcher, error) {
 		children, err := buildConditionList("$and", c)
@@ -50,3 +52,9 @@ func buildNot(condition any) (matcher, error) {
 
 func (m notMatcher) match(record any) bool { return !m.inner.match(record) }
 func (m notMatcher) priority() int         { return 1 + m.inner.priority() }
+func (m notMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	explainBranch(buf, prefix, isLast, isRoot, "Not", m.inner)
+}
+func (m notMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceWrapped(record, buf, prefix, isLast, isRoot, "Not", m.inner, true)
+}

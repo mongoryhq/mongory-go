@@ -1,12 +1,17 @@
 package engine
 
+import (
+	"fmt"
+	"strings"
+)
+
 func init() {
 	register("$eq", func(c any) (matcher, error) { return eqMatcher{condition: c}, nil })
 	register("$ne", func(c any) (matcher, error) { return neMatcher{condition: c}, nil })
-	register("$gt", buildOrder(func(c int) bool { return c > 0 }))
-	register("$gte", buildOrder(func(c int) bool { return c >= 0 }))
-	register("$lt", buildOrder(func(c int) bool { return c < 0 }))
-	register("$lte", buildOrder(func(c int) bool { return c <= 0 }))
+	register("$gt", buildOrder("Gt", func(c int) bool { return c > 0 }))
+	register("$gte", buildOrder("Gte", func(c int) bool { return c >= 0 }))
+	register("$lt", buildOrder("Lt", func(c int) bool { return c < 0 }))
+	register("$lte", buildOrder("Lte", func(c int) bool { return c <= 0 }))
 }
 
 // eqMatcher matches a value equal to the condition, or an array containing it.
@@ -28,7 +33,14 @@ func (m eqMatcher) match(record any) bool {
 	return false
 }
 
-func (eqMatcher) priority() int { return 1 }
+func (eqMatcher) priority() int   { return 1 }
+func (m eqMatcher) label() string { return fmt.Sprintf("Eq(%s)", formatValue(m.condition)) }
+func (m eqMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+}
+func (m eqMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+}
 
 // neMatcher is the strict negation of eqMatcher.
 type neMatcher struct {
@@ -37,16 +49,24 @@ type neMatcher struct {
 
 func (m neMatcher) match(record any) bool { return !eqMatcher(m).match(record) }
 func (neMatcher) priority() int           { return 1 }
+func (m neMatcher) label() string         { return fmt.Sprintf("Ne(%s)", formatValue(m.condition)) }
+func (m neMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+}
+func (m neMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+}
 
 // orderMatcher implements $gt/$gte/$lt/$lte; incomparable pairs never match.
 type orderMatcher struct {
+	op        string
 	condition any
 	accept    func(cmp int) bool
 }
 
-func buildOrder(accept func(cmp int) bool) builderFunc {
+func buildOrder(op string, accept func(cmp int) bool) builderFunc {
 	return func(c any) (matcher, error) {
-		return orderMatcher{condition: c, accept: accept}, nil
+		return orderMatcher{op: op, condition: c, accept: accept}, nil
 	}
 }
 
@@ -56,3 +76,12 @@ func (m orderMatcher) match(record any) bool {
 }
 
 func (orderMatcher) priority() int { return 3 }
+func (m orderMatcher) label() string {
+	return fmt.Sprintf("%s(%s)", m.op, formatValue(m.condition))
+}
+func (m orderMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+}
+func (m orderMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+}

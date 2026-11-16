@@ -1,5 +1,10 @@
 package engine
 
+import (
+	"fmt"
+	"strings"
+)
+
 func init() {
 	register("$elemMatch", buildElemMatch)
 	register("$every", buildEvery)
@@ -34,6 +39,12 @@ func (m elemMatchMatcher) match(record any) bool {
 }
 
 func (m elemMatchMatcher) priority() int { return 3 + m.inner.priority() }
+func (m elemMatchMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	explainBranch(buf, prefix, isLast, isRoot, "ElemMatch", m.inner)
+}
+func (m elemMatchMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceArrayElements(record, buf, prefix, isLast, isRoot, "ElemMatch", m.inner, true)
+}
 
 // everyMatcher matches a non-empty array whose elements all satisfy the
 // condition.
@@ -63,6 +74,42 @@ func (m everyMatcher) match(record any) bool {
 }
 
 func (m everyMatcher) priority() int { return 3 + m.inner.priority() }
+func (m everyMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	explainBranch(buf, prefix, isLast, isRoot, "Every", m.inner)
+}
+func (m everyMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceArrayElements(record, buf, prefix, isLast, isRoot, "Every", m.inner, false)
+}
+
+func traceArrayElements(record any, buf *strings.Builder, prefix string, isLast, isRoot bool, op string, inner matcher, stopOn bool) bool {
+	arr, ok := record.([]any)
+	if !ok || len(arr) == 0 {
+		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] %s | value=%s", op, formatValue(record)))
+		return false
+	}
+	childPrefix := childPrefixFor(prefix, isLast, isRoot)
+	var childBuf strings.Builder
+	matched := !stopOn
+	for i, e := range arr {
+		elemVal := normalize(e)
+		elemLast := i == len(arr)-1
+		elemChildPrefix := childPrefixFor(childPrefix, elemLast, false)
+		var elemBuf strings.Builder
+		res := inner.trace(elemVal, &elemBuf, elemChildPrefix, true, false)
+		writeTreeLine(&childBuf, childPrefix, elemLast, false, fmt.Sprintf("[%s] [%d] | value=%s", statusLabel(res), i, formatValue(elemVal)))
+		childBuf.WriteString(elemBuf.String())
+		if res == stopOn {
+			matched = stopOn
+			if rem := len(arr) - i - 1; rem > 0 {
+				writeTreeLine(&childBuf, childPrefix, true, false, fmt.Sprintf("[SKIP] %d remaining element(s) (short-circuited)", rem))
+			}
+			break
+		}
+	}
+	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), op, formatValue(record)))
+	buf.WriteString(childBuf.String())
+	return matched
+}
 
 func buildElementCondition(operator string, condition any) (matcher, error) {
 	c, ok := condition.(map[string]any)
@@ -92,3 +139,14 @@ func (m sizeMatcher) match(record any) bool {
 }
 
 func (m sizeMatcher) priority() int { return 2 + m.inner.priority() }
+func (m sizeMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	explainBranch(buf, prefix, isLast, isRoot, "Size", m.inner)
+}
+func (m sizeMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	arr, ok := record.([]any)
+	if !ok {
+		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Size | value=%s", formatValue(record)))
+		return false
+	}
+	return traceWrapped(int64(len(arr)), buf, prefix, isLast, isRoot, fmt.Sprintf("Size(len=%d)", len(arr)), m.inner, false)
+}
