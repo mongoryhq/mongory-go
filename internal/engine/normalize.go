@@ -22,34 +22,162 @@ type timeValuer interface {
 	Time() time.Time
 }
 
+var (
+	timeType        = reflect.TypeOf(time.Time{})
+	timeValuerType  = reflect.TypeOf((*timeValuer)(nil)).Elem()
+	jsonNumberType  = reflect.TypeOf(json.Number(""))
+	structInfoCache sync.Map // reflect.Type -> *structInfo
+	timeValuerCache sync.Map // reflect.Type -> bool
+)
+
 // normalize shallowly collapses a Go value into one of the canonical matching
 // types: nil, bool, string, int64, float64, time.Time, map[string]any, []any,
 // or an opaque comparable value ([N]byte identifiers such as ObjectID).
 // Children of maps and slices stay raw; every reader normalizes on access, so
 // structs and typed containers are only converted at the levels a query visits.
 func normalize(v any) any {
+	if norm, ok := normalizeFast(v); ok {
+		return norm
+	}
+	return normalizeReflect(reflect.ValueOf(v))
+}
+
+// normalizeFast collapses canonical values, primitive integers/floats, common
+// scalar pointers, and json.Number without reflection. It returns ok=false for
+// aggregate or custom reflect types (structs, typed slices/maps, interfaces).
+func normalizeFast(v any) (any, bool) {
 	switch x := v.(type) {
 	case nil, missingKey, bool, string, int64, float64, time.Time,
 		map[string]any, []any, *regexp.Regexp:
-		return v
+		return v, true
 	case int:
-		return int64(x)
+		return int64(x), true
 	case int32:
-		return int64(x)
+		return int64(x), true
 	case uint32:
-		return int64(x)
+		return int64(x), true
 	case float32:
-		return float64(x)
-	case json.Number:
-		if i, err := x.Int64(); err == nil {
-			return i
-		}
-		if f, err := x.Float64(); err == nil {
-			return f
-		}
-		return string(x)
+		return float64(x), true
 	}
-	return normalizeReflect(reflect.ValueOf(v))
+	return normalizeFastExtra(v)
+}
+
+func normalizeFastExtra(v any) (any, bool) {
+	switch x := v.(type) {
+	case int8:
+		return int64(x), true
+	case int16:
+		return int64(x), true
+	case uint8:
+		return int64(x), true
+	case uint16:
+		return int64(x), true
+	case *int:
+		if x == nil {
+			return nil, true
+		}
+		return int64(*x), true
+	case *int64:
+		if x == nil {
+			return nil, true
+		}
+		return *x, true
+	case *float64:
+		if x == nil {
+			return nil, true
+		}
+		return *x, true
+	case *string:
+		if x == nil {
+			return nil, true
+		}
+		return *x, true
+	case *bool:
+		if x == nil {
+			return nil, true
+		}
+		return *x, true
+	case *time.Time:
+		if x == nil {
+			return nil, true
+		}
+		return *x, true
+	case json.Number:
+		return parseJSONNumber(x), true
+	}
+	return nil, false
+}
+
+func parseJSONNumber(x json.Number) any {
+	if i, err := x.Int64(); err == nil {
+		return i
+	}
+	if f, err := x.Float64(); err == nil {
+		return f
+	}
+	return string(x)
+}
+
+func parseJSONNumberString(s string) any {
+	return parseJSONNumber(json.Number(s))
+}
+
+func hasTimeValuer(t reflect.Type) bool {
+	if t.PkgPath() == "" {
+		return false
+	}
+	if cached, ok := timeValuerCache.Load(t); ok {
+		return cached.(bool)
+	}
+	impl := t.Implements(timeValuerType)
+	timeValuerCache.Store(t, impl)
+	return impl
+}
+
+// extractTime returns the time.Time if rv is time.Time or implements timeValuer.
+func extractTime(rv reflect.Value) (time.Time, bool) {
+	t := rv.Type()
+	if t == timeType {
+		return rv.Interface().(time.Time), true
+	}
+	if hasTimeValuer(t) {
+		return rv.Interface().(timeValuer).Time(), true
+	}
+	return time.Time{}, false
+}
+
+// unwrapReflect dereferences pointers and interfaces and maps nil containers
+// (slice, map, pointer, interface) to ok=false (representing nil).
+func unwrapReflect(rv reflect.Value) (reflect.Value, bool) {
+	for rv.IsValid() {
+		switch rv.Kind() {
+		case reflect.Pointer, reflect.Interface:
+			if rv.IsNil() {
+				return reflect.Value{}, false
+			}
+			rv = rv.Elem()
+		case reflect.Slice, reflect.Map:
+			if rv.IsNil() {
+				return reflect.Value{}, false
+			}
+			return rv, true
+		default:
+			return rv, true
+		}
+	}
+	return reflect.Value{}, false
+}
+
+// isReflectList reports whether rv should follow the implicit/explicit array
+// path. It excludes bson.D ([]bson.E) and identifier byte arrays ([N]byte).
+func isReflectList(rv reflect.Value) bool {
+	switch rv.Kind() {
+	case reflect.Slice:
+		return !rv.IsNil() && !isKeyValueStruct(rv.Type().Elem())
+	case reflect.Array:
+		return rv.Type().Elem().Kind() != reflect.Uint8
+	}
+	return false
 }
 
 func normalizeReflect(rv reflect.Value) any {
@@ -147,20 +275,61 @@ func orderedDocToMap(rv reflect.Value) map[string]any {
 }
 
 type structField struct {
-	name      string
-	index     []int
-	inlineMap bool
+	name        string
+	index       []int
+	singleIndex int // index[0] when len(index) == 1, else -1
+	inlineMap   bool
 }
 
-var structFieldCache sync.Map // reflect.Type -> []structField
+type structInfo struct {
+	fields       []structField
+	byName       map[string]structField
+	inlineMaps   []structField
+	isTimeValuer bool
+	isRegex      bool
+}
+
+func fieldValue(rv reflect.Value, f structField) (reflect.Value, bool) {
+	if f.singleIndex >= 0 {
+		return rv.Field(f.singleIndex), true
+	}
+	cur := rv
+	for i, idx := range f.index {
+		if i > 0 && cur.Kind() == reflect.Pointer {
+			if cur.IsNil() {
+				return reflect.Value{}, false
+			}
+			cur = cur.Elem()
+		}
+		cur = cur.Field(idx)
+	}
+	return cur, true
+}
+
+func structIsPresent(rv reflect.Value) bool {
+	info := getStructInfo(rv.Type())
+	for _, f := range info.fields {
+		fv, ok := fieldValue(rv, f)
+		if !ok {
+			continue
+		}
+		if !f.inlineMap {
+			return true
+		}
+		if fv.Len() > 0 {
+			return true
+		}
+	}
+	return false
+}
 
 func structToMap(rv reflect.Value) map[string]any {
-	fields := structFields(rv.Type())
-	out := make(map[string]any, len(fields))
+	info := getStructInfo(rv.Type())
+	out := make(map[string]any, len(info.fields))
 	var inlineMaps []reflect.Value
-	for _, f := range fields {
-		fv, err := rv.FieldByIndexErr(f.index)
-		if err != nil {
+	for _, f := range info.fields {
+		fv, ok := fieldValue(rv, f)
+		if !ok {
 			continue // field promoted through a nil inline pointer
 		}
 		if f.inlineMap {
@@ -185,14 +354,35 @@ func hasKey(m map[string]any, k string) bool {
 	return ok
 }
 
-func structFields(t reflect.Type) []structField {
-	if cached, ok := structFieldCache.Load(t); ok {
-		return cached.([]structField)
+func getStructInfo(t reflect.Type) *structInfo {
+	if cached, ok := structInfoCache.Load(t); ok {
+		return cached.(*structInfo)
 	}
 	var fields []structField
 	collectStructFields(t, nil, map[string]bool{}, &fields)
-	cached, _ := structFieldCache.LoadOrStore(t, fields)
-	return cached.([]structField)
+	byName := make(map[string]structField, len(fields))
+	var inlineMaps []structField
+	for i := range fields {
+		if len(fields[i].index) == 1 {
+			fields[i].singleIndex = fields[i].index[0]
+		} else {
+			fields[i].singleIndex = -1
+		}
+		if fields[i].inlineMap {
+			inlineMaps = append(inlineMaps, fields[i])
+		} else {
+			byName[fields[i].name] = fields[i]
+		}
+	}
+	info := &structInfo{
+		fields:       fields,
+		byName:       byName,
+		inlineMaps:   inlineMaps,
+		isTimeValuer: t == timeType || hasTimeValuer(t),
+		isRegex:      isRegexStruct(t),
+	}
+	cached, _ := structInfoCache.LoadOrStore(t, info)
+	return cached.(*structInfo)
 }
 
 // collectStructFields follows the mongo-go-driver struct codec: exported

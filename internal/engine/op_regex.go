@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 )
@@ -53,6 +54,20 @@ func buildRegex(condition, options any) (matcher, error) {
 func (m regexMatcher) match(record any) bool {
 	s, ok := record.(string)
 	return ok && m.re.MatchString(s)
+}
+
+func (m regexMatcher) matchReflect(rv reflect.Value) bool {
+	rv, ok := unwrapReflect(rv)
+	if !ok || rv.Kind() != reflect.String {
+		return false
+	}
+	if rv.Type() == jsonNumberType {
+		return m.match(parseJSONNumberString(rv.String()))
+	}
+	if hasTimeValuer(rv.Type()) {
+		return false
+	}
+	return m.re.MatchString(rv.String())
 }
 
 func (m regexMatcher) priority() int {

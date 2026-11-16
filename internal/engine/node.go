@@ -3,21 +3,42 @@ package engine
 import (
 	"fmt"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-// matcher is one node of the compiled tree. match receives a value already
-// passed through normalize.
+// matcher is one node of the compiled tree. match receives a canonical value
+// (or missing); matchReflect evaluates an unnormalized reflect.Value directly
+// without allocating intermediate maps or []any slices.
 type matcher interface {
 	match(record any) bool
+	matchReflect(rv reflect.Value) bool
 	// priority orders sibling matchers so cheaper ones run first.
 	priority() int
 	explain(buf *strings.Builder, prefix string, isLast, isRoot bool)
 	trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool
+}
+
+func matchRaw(m matcher, v any) bool {
+	if norm, ok := normalizeFast(v); ok {
+		return m.match(norm)
+	}
+	return m.matchReflect(reflect.ValueOf(v))
+}
+
+func matchReflectValue(m matcher, rv reflect.Value) bool {
+	if rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return m.match(nil)
+		}
+		return matchRaw(m, rv.Interface())
+	}
+	return m.matchReflect(rv)
 }
 
 type builderFunc func(condition any) (matcher, error)
@@ -48,6 +69,15 @@ func (m allOf) match(record any) bool {
 	return true
 }
 
+func (m allOf) matchReflect(rv reflect.Value) bool {
+	for _, c := range m {
+		if !c.matchReflect(rv) {
+			return false
+		}
+	}
+	return true
+}
+
 func (m allOf) priority() int { return 1 + sumPriority(m) }
 func (m allOf) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	if len(m) == 0 {
@@ -66,6 +96,15 @@ type anyOf []matcher
 func (m anyOf) match(record any) bool {
 	for _, c := range m {
 		if c.match(record) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m anyOf) matchReflect(rv reflect.Value) bool {
+	for _, c := range m {
+		if c.matchReflect(rv) {
 			return true
 		}
 	}
@@ -176,6 +215,30 @@ func (m *literalMatcher) match(record any) bool {
 	return m.dispatched.match(record)
 }
 
+func (m *literalMatcher) matchReflect(rv reflect.Value) bool {
+	rv, ok := unwrapReflect(rv)
+	if !ok {
+		return m.dispatched.match(nil)
+	}
+	switch rv.Kind() {
+	case reflect.String:
+		if rv.Type() == jsonNumberType {
+			return m.match(parseJSONNumberString(rv.String()))
+		}
+	case reflect.Slice:
+		if !isKeyValueStruct(rv.Type().Elem()) {
+			m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition) })
+			return m.arrayRecord != nil && m.arrayRecord.matchReflect(rv)
+		}
+	case reflect.Array:
+		if rv.Type().Elem().Kind() != reflect.Uint8 {
+			m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition) })
+			return m.arrayRecord != nil && m.arrayRecord.matchReflect(rv)
+		}
+	}
+	return m.dispatched.matchReflect(rv)
+}
+
 func (m *literalMatcher) priority() int { return 1 + m.dispatched.priority() }
 func (m *literalMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	m.dispatched.explain(buf, prefix, isLast, isRoot)
@@ -195,8 +258,9 @@ func (m *literalMatcher) trace(record any, buf *strings.Builder, prefix string, 
 // nullMatcher implements a literal null condition: missing or explicit nil.
 type nullMatcher struct{}
 
-func (nullMatcher) match(record any) bool { return record == nil || record == missing }
-func (nullMatcher) priority() int         { return 2 }
+func (nullMatcher) match(record any) bool              { return record == nil || record == missing }
+func (nullMatcher) matchReflect(rv reflect.Value) bool { _, ok := unwrapReflect(rv); return !ok }
+func (nullMatcher) priority() int                      { return 2 }
 func (nullMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	writeTreeLine(buf, prefix, isLast, isRoot, "Eq(nil) | NotExists")
 }
@@ -207,10 +271,21 @@ func (m nullMatcher) trace(record any, buf *strings.Builder, prefix string, isLa
 // fieldMatcher digs one key out of a map (or one index out of an array) and
 // hands the value to its literal matcher.
 type fieldMatcher struct {
-	field   string
-	index   int
-	isIndex bool
-	literal *literalMatcher
+	field    string
+	fieldVal reflect.Value
+	index    int
+	isIndex  bool
+	literal  *literalMatcher
+	slot     atomic.Pointer[fieldSlot]
+}
+
+type fieldSlot struct {
+	typ           reflect.Type
+	found         bool
+	isScalar      bool // time.Time or implements timeValuer
+	isRegex       bool
+	field         structField
+	hasInlineMaps bool
 }
 
 func buildField(field string, condition any) (matcher, error) {
@@ -219,7 +294,33 @@ func buildField(field string, condition any) (matcher, error) {
 		return nil, err
 	}
 	index, isIndex := parseIndexKey(field)
-	return &fieldMatcher{field: field, index: index, isIndex: isIndex, literal: literal}, nil
+	return &fieldMatcher{
+		field:    field,
+		fieldVal: reflect.ValueOf(field),
+		index:    index,
+		isIndex:  isIndex,
+		literal:  literal,
+	}, nil
+}
+
+func (m *fieldMatcher) resolveStructSlot(t reflect.Type) (*fieldSlot, *structInfo) {
+	if slot := m.slot.Load(); slot != nil && slot.typ == t {
+		return slot, nil
+	}
+	info := getStructInfo(t)
+	sf, found := info.byName[m.field]
+	slot := &fieldSlot{
+		typ:           t,
+		found:         found,
+		isScalar:      info.isTimeValuer,
+		isRegex:       info.isRegex,
+		field:         sf,
+		hasInlineMaps: len(info.inlineMaps) > 0,
+	}
+	if m.slot.Load() == nil {
+		m.slot.CompareAndSwap(nil, slot)
+	}
+	return slot, info
 }
 
 func (m *fieldMatcher) extract(record any) (any, bool) {
@@ -251,7 +352,88 @@ func (m *fieldMatcher) match(record any) bool {
 	if !ok {
 		return false
 	}
-	return m.literal.match(normalize(value))
+	return matchRaw(m.literal, value)
+}
+
+func (m *fieldMatcher) matchReflect(rv reflect.Value) bool {
+	rv, ok := unwrapReflect(rv)
+	if !ok {
+		return false
+	}
+	switch rv.Kind() {
+	case reflect.Struct:
+		return m.matchStructField(rv)
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return false
+		}
+		elem := rv.MapIndex(m.fieldVal)
+		if !elem.IsValid() {
+			return m.literal.match(missing)
+		}
+		return matchReflectValue(m.literal, elem)
+	case reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return false
+		}
+		return m.matchSliceIndex(rv)
+	case reflect.Slice:
+		if isKeyValueStruct(rv.Type().Elem()) {
+			for i := range rv.Len() {
+				entry := rv.Index(i)
+				if entry.Field(0).String() == m.field {
+					return matchRaw(m.literal, entry.Field(1).Interface())
+				}
+			}
+			return m.literal.match(missing)
+		}
+		return m.matchSliceIndex(rv)
+	}
+	return false
+}
+
+func (m *fieldMatcher) matchStructField(rv reflect.Value) bool {
+	slot, info := m.resolveStructSlot(rv.Type())
+	if slot.isScalar {
+		return false
+	}
+	if slot.isRegex {
+		return m.match(normalizeReflect(rv))
+	}
+	if slot.found {
+		if slot.field.singleIndex >= 0 {
+			return matchReflectValue(m.literal, rv.Field(slot.field.singleIndex))
+		}
+		if fv, exists := fieldValue(rv, slot.field); exists {
+			return matchReflectValue(m.literal, fv)
+		}
+	}
+	if slot.hasInlineMaps {
+		if info == nil {
+			info = getStructInfo(rv.Type())
+		}
+		for _, im := range info.inlineMaps {
+			if mv, exists := fieldValue(rv, im); exists && !mv.IsNil() {
+				if elem := mv.MapIndex(m.fieldVal); elem.IsValid() {
+					return matchReflectValue(m.literal, elem)
+				}
+			}
+		}
+	}
+	return m.literal.match(missing)
+}
+
+func (m *fieldMatcher) matchSliceIndex(rv reflect.Value) bool {
+	if m.isIndex {
+		i := m.index
+		if i < 0 {
+			i += rv.Len()
+		}
+		if i >= 0 && i < rv.Len() {
+			return matchReflectValue(m.literal, rv.Index(i))
+		}
+	}
+	return m.literal.match(missing)
 }
 
 func (m *fieldMatcher) priority() int { return 1 + m.literal.priority() }

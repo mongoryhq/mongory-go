@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -33,6 +34,20 @@ func (m eqMatcher) match(record any) bool {
 	return false
 }
 
+func (m eqMatcher) matchReflect(rv reflect.Value) bool {
+	if valuesEqualReflect(rv, m.condition) {
+		return true
+	}
+	if list, ok := unwrapReflect(rv); ok && isReflectList(list) {
+		for i := range list.Len() {
+			if valuesEqualReflect(list.Index(i), m.condition) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (eqMatcher) priority() int   { return 1 }
 func (m eqMatcher) label() string { return fmt.Sprintf("Eq(%s)", formatValue(m.condition)) }
 func (m eqMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
@@ -47,9 +62,10 @@ type neMatcher struct {
 	condition any
 }
 
-func (m neMatcher) match(record any) bool { return !eqMatcher(m).match(record) }
-func (neMatcher) priority() int           { return 1 }
-func (m neMatcher) label() string         { return fmt.Sprintf("Ne(%s)", formatValue(m.condition)) }
+func (m neMatcher) match(record any) bool              { return !eqMatcher(m).match(record) }
+func (m neMatcher) matchReflect(rv reflect.Value) bool { return !eqMatcher(m).matchReflect(rv) }
+func (neMatcher) priority() int                        { return 1 }
+func (m neMatcher) label() string                      { return fmt.Sprintf("Ne(%s)", formatValue(m.condition)) }
 func (m neMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
 }
@@ -72,6 +88,11 @@ func buildOrder(op string, accept func(cmp int) bool) builderFunc {
 
 func (m orderMatcher) match(record any) bool {
 	cmp, ok := compareValues(record, m.condition)
+	return ok && m.accept(cmp)
+}
+
+func (m orderMatcher) matchReflect(rv reflect.Value) bool {
+	cmp, ok := compareReflect(rv, m.condition)
 	return ok && m.accept(cmp)
 }
 

@@ -48,6 +48,13 @@ type role string
 type wrapper struct {
 	*Base `bson:",inline"`
 	Role  role
+	Extra map[string]any `bson:",inline"`
+}
+
+type event struct {
+	At    time.Time
+	Count json.Number
+	Raw   json.Number
 }
 
 // Driver look-alikes: matched by shape, so no mongo-driver dependency.
@@ -144,6 +151,12 @@ func TestMatcherMatch(t *testing.T) {
 		{"struct inline map", M{"plan": "pro"}, alice, true},
 		{"struct inline map never overrides fields", M{"full_name": "Alice"}, alice, true},
 		{"struct nil inline pointer", M{"_id": nil, "role": "admin"}, wrapper{Role: "admin"}, true},
+		{"struct nil inline pointer falls back to inline map", M{"_id": 99}, wrapper{Role: "admin", Extra: M{"_id": 99}}, true},
+		{"struct time field equality", M{"at": createdAt}, event{At: createdAt}, true},
+		{"struct time field not treated as subdocument", M{"at.year": M{"$exists": true}}, event{At: createdAt}, false},
+		{"struct json.Number equality and regex", M{"count": 42, "raw": M{"$regex": "^abc"}}, event{Count: json.Number("42"), Raw: json.Number("abcdef")}, true},
+		{"empty struct not present", M{"$present": false}, struct{}{}, true},
+		{"struct slice $eq/$ne element match", M{"tags": M{"$eq": "ruby"}, "tags.$ne": "python"}, alice, true},
 		{"struct as condition", Meta{Source: "web"}, M{"source": "web"}, true},
 		{"nil pointer record", M{"a": 1}, (*person)(nil), false},
 		{"bson.D condition", bsonD{{"age", 30}, {"name", "Al"}}, M{"age": 30, "name": "Al"}, true},
@@ -324,6 +337,17 @@ func TestMatcherConcurrentSafety(t *testing.T) {
 		"note":   M{"$regex": "^ok", "$options": "i"},
 	})
 
+	type structDoc struct {
+		Tags   []string
+		Scores []int
+		Note   string
+	}
+	type structDocAlt struct {
+		Note   string
+		Tags   []string
+		Scores []int
+	}
+
 	const workers = 8
 	const iters = 300
 	var wg sync.WaitGroup
@@ -335,7 +359,9 @@ func TestMatcherConcurrentSafety(t *testing.T) {
 			defer wg.Done()
 			for range iters {
 				doc := M{"tags": A{"ruby", "go"}, "scores": A{3, 6, 9}, "note": "OK-1"}
-				if !m.Match(doc) {
+				s1 := structDoc{Tags: []string{"ruby", "go"}, Scores: []int{3, 6, 9}, Note: "OK-1"}
+				s2 := structDocAlt{Tags: []string{"ruby", "go"}, Scores: []int{3, 6, 9}, Note: "OK-1"}
+				if !m.Match(doc) || !m.Match(&s1) || !m.Match(s2) {
 					errs <- errors.New("expected match")
 					return
 				}
@@ -347,7 +373,7 @@ func TestMatcherConcurrentSafety(t *testing.T) {
 					errs <- errors.New("expected explain output")
 					return
 				}
-				if m.Match(M{"tags": "py", "scores": 2, "note": "no"}) {
+				if m.Match(M{"tags": "py", "scores": 2, "note": "no"}) || m.Match(&structDoc{Note: "no"}) {
 					errs <- errors.New("unexpected match")
 					return
 				}

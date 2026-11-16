@@ -93,6 +93,14 @@ func BenchmarkMatch(b *testing.B) {
 			}
 			reportPerRecord(b)
 		})
+		b.Run(bc.name+"/structs_count", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if got := mongory.Count(users, m); got != want {
+					b.Fatalf("got %d, want %d", got, want)
+				}
+			}
+			reportPerRecord(b)
+		})
 	}
 }
 

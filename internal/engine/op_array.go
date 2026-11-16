@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -25,17 +26,38 @@ func buildElemMatch(condition any) (matcher, error) {
 	return elemMatchMatcher{inner: inner}, nil
 }
 
-func (m elemMatchMatcher) match(record any) bool {
+func matchListElementsAny(record any, inner matcher, stopOn bool) bool {
 	arr, ok := record.([]any)
-	if !ok {
+	if !ok || len(arr) == 0 {
 		return false
 	}
 	for _, e := range arr {
-		if m.inner.match(normalize(e)) {
-			return true
+		if matchRaw(inner, e) == stopOn {
+			return stopOn
 		}
 	}
-	return false
+	return !stopOn
+}
+
+func matchListElementsReflect(rv reflect.Value, inner matcher, stopOn bool) bool {
+	list, ok := unwrapReflect(rv)
+	if !ok || !isReflectList(list) || list.Len() == 0 {
+		return false
+	}
+	for i := range list.Len() {
+		if matchReflectValue(inner, list.Index(i)) == stopOn {
+			return stopOn
+		}
+	}
+	return !stopOn
+}
+
+func (m elemMatchMatcher) match(record any) bool {
+	return matchListElementsAny(record, m.inner, true)
+}
+
+func (m elemMatchMatcher) matchReflect(rv reflect.Value) bool {
+	return matchListElementsReflect(rv, m.inner, true)
 }
 
 func (m elemMatchMatcher) priority() int { return 3 + m.inner.priority() }
@@ -61,16 +83,11 @@ func buildEvery(condition any) (matcher, error) {
 }
 
 func (m everyMatcher) match(record any) bool {
-	arr, ok := record.([]any)
-	if !ok || len(arr) == 0 {
-		return false
-	}
-	for _, e := range arr {
-		if !m.inner.match(normalize(e)) {
-			return false
-		}
-	}
-	return true
+	return matchListElementsAny(record, m.inner, false)
+}
+
+func (m everyMatcher) matchReflect(rv reflect.Value) bool {
+	return matchListElementsReflect(rv, m.inner, false)
 }
 
 func (m everyMatcher) priority() int { return 3 + m.inner.priority() }
@@ -136,6 +153,11 @@ func buildSize(condition any) (matcher, error) {
 func (m sizeMatcher) match(record any) bool {
 	arr, ok := record.([]any)
 	return ok && m.inner.match(int64(len(arr)))
+}
+
+func (m sizeMatcher) matchReflect(rv reflect.Value) bool {
+	list, ok := unwrapReflect(rv)
+	return ok && isReflectList(list) && m.inner.match(int64(list.Len()))
 }
 
 func (m sizeMatcher) priority() int { return 2 + m.inner.priority() }

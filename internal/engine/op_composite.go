@@ -1,6 +1,9 @@
 package engine
 
-import "strings"
+import (
+	"reflect"
+	"strings"
+)
 
 func init() {
 	register("$and", func(c any) (matcher, error) {
@@ -50,8 +53,9 @@ func buildNot(condition any) (matcher, error) {
 	return notMatcher{inner: inner}, nil
 }
 
-func (m notMatcher) match(record any) bool { return !m.inner.match(record) }
-func (m notMatcher) priority() int         { return 1 + m.inner.priority() }
+func (m notMatcher) match(record any) bool              { return !m.inner.match(record) }
+func (m notMatcher) matchReflect(rv reflect.Value) bool { return !m.inner.matchReflect(rv) }
+func (m notMatcher) priority() int                      { return 1 + m.inner.priority() }
 func (m notMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	explainBranch(buf, prefix, isLast, isRoot, "Not", m.inner)
 }

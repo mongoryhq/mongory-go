@@ -36,7 +36,7 @@ func Compile(condition any) (*Tree, error) {
 
 // Match reports whether record satisfies the compiled condition.
 func (t *Tree) Match(record any) bool {
-	return t.root.match(normalize(record))
+	return matchRaw(t.root, record)
 }
 
 // Explain returns a human-readable representation of the compiled matcher tree.

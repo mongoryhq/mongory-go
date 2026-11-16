@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -40,9 +41,32 @@ func (m inMatcher) match(record any) bool {
 	return found != m.negate
 }
 
+func (m inMatcher) matchReflect(rv reflect.Value) bool {
+	found := false
+	if list, ok := unwrapReflect(rv); ok && isReflectList(list) {
+		for i := range list.Len() {
+			if found = m.containsReflect(list.Index(i)); found {
+				break
+			}
+		}
+	} else {
+		found = m.containsReflect(rv)
+	}
+	return found != m.negate
+}
+
 func (m inMatcher) contains(v any) bool {
 	for _, item := range m.items {
 		if valuesEqual(v, item) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m inMatcher) containsReflect(rv reflect.Value) bool {
+	for _, item := range m.items {
+		if valuesEqualReflect(rv, item) {
 			return true
 		}
 	}
