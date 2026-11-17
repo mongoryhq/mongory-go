@@ -7,8 +7,8 @@ import (
 )
 
 func init() {
-	register("$eq", func(c any) (matcher, error) { return eqMatcher{condition: c}, nil })
-	register("$ne", func(c any) (matcher, error) { return neMatcher{condition: c}, nil })
+	register("$eq", func(ctx *compileCtx, c any) (matcher, error) { return addNodeMatcher(ctx, eqMatcher{condition: c}) })
+	register("$ne", func(ctx *compileCtx, c any) (matcher, error) { return addNodeMatcher(ctx, neMatcher{condition: c}) })
 	register("$gt", buildOrder("Gt", func(c int) bool { return c > 0 }))
 	register("$gte", buildOrder("Gte", func(c int) bool { return c >= 0 }))
 	register("$lt", buildOrder("Lt", func(c int) bool { return c < 0 }))
@@ -81,8 +81,8 @@ type orderMatcher struct {
 }
 
 func buildOrder(op string, accept func(cmp int) bool) builderFunc {
-	return func(c any) (matcher, error) {
-		return orderMatcher{op: op, condition: c, accept: accept}, nil
+	return func(ctx *compileCtx, c any) (matcher, error) {
+		return addNodeMatcher(ctx, orderMatcher{op: op, condition: c, accept: accept})
 	}
 }
 

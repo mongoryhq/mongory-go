@@ -520,8 +520,9 @@ type cycleKey struct {
 
 // convertRootCondition normalizes a top-level query condition document,
 // expands dotted keys, coerces typed nil slices passed to list operators into
-// empty []any, and rejects cyclic values with ErrInvalidCondition.
-func convertRootCondition(condition any) (map[string]any, error) {
+// empty []any, enforces maxDepth, and rejects cyclic values with
+// ErrInvalidCondition.
+func convertRootCondition(condition any, maxDepth int) (map[string]any, error) {
 	if condition == nil {
 		return map[string]any{}, nil
 	}
@@ -530,14 +531,14 @@ func convertRootCondition(condition any) (map[string]any, error) {
 			return map[string]any{}, nil
 		}
 		seen := map[cycleKey]bool{}
-		res, err := convertAny(m, false, seen)
+		res, err := convertAny(m, false, 0, maxDepth, seen)
 		if err != nil {
 			return nil, err
 		}
 		return res.(map[string]any), nil
 	}
 	seen := map[cycleKey]bool{}
-	norm, err := convertAny(condition, false, seen)
+	norm, err := convertAny(condition, false, 0, maxDepth, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -551,15 +552,26 @@ func convertRootCondition(condition any) (map[string]any, error) {
 	}
 }
 
+func checkDepthLimit(depth, maxDepth int) error {
+	if maxDepth > 0 && depth > maxDepth {
+		return limitExceeded("condition depth %d exceeds max depth %d", depth, maxDepth)
+	}
+	return nil
+}
+
 // convertConditionWithSeen expands dotted keys into nested conditions
 // (deep-merging shared prefixes) and normalizes every value. Keys are visited
 // in sorted order so overlapping keys merge deterministically.
-func convertConditionWithSeen(condition map[string]any, seen map[cycleKey]bool) (map[string]any, error) {
+func convertConditionWithSeen(condition map[string]any, depth, maxDepth int, seen map[cycleKey]bool) (map[string]any, error) {
 	out := make(map[string]any, len(condition))
 	for _, key := range sortedKeys(condition) {
 		parts := splitKey(key)
+		nextDepth := depth + len(parts)
+		if err := checkDepthLimit(nextDepth, maxDepth); err != nil {
+			return nil, err
+		}
 		listCtx := isListOperator(parts[len(parts)-1])
-		val, err := convertAny(condition[key], listCtx, seen)
+		val, err := convertAny(condition[key], listCtx, nextDepth, maxDepth, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -576,7 +588,7 @@ func isListOperator(key string) bool {
 	return false
 }
 
-func convertAny(v any, listCtx bool, seen map[cycleKey]bool) (any, error) {
+func convertAny(v any, listCtx bool, depth, maxDepth int, seen map[cycleKey]bool) (any, error) {
 	if norm, ok := normalizeFast(v); ok {
 		switch x := norm.(type) {
 		case map[string]any:
@@ -588,7 +600,7 @@ func convertAny(v any, listCtx bool, seen map[cycleKey]bool) (any, error) {
 				return nil, invalidCondition("condition contains a cyclic reference")
 			}
 			seen[k] = true
-			out, err := convertConditionWithSeen(x, seen)
+			out, err := convertConditionWithSeen(x, depth, maxDepth, seen)
 			delete(seen, k)
 			return out, err
 		case []any:
@@ -600,20 +612,20 @@ func convertAny(v any, listCtx bool, seen map[cycleKey]bool) (any, error) {
 				return nil, invalidCondition("condition contains a cyclic reference")
 			}
 			seen[k] = true
-			out, err := convertSliceAny(x, seen)
+			out, err := convertSliceAny(x, depth, maxDepth, seen)
 			delete(seen, k)
 			return out, err
 		default:
 			return x, nil
 		}
 	}
-	return convertReflect(reflect.ValueOf(v), listCtx, seen)
+	return convertReflect(reflect.ValueOf(v), listCtx, depth, maxDepth, seen)
 }
 
-func convertSliceAny(x []any, seen map[cycleKey]bool) ([]any, error) {
+func convertSliceAny(x []any, depth, maxDepth int, seen map[cycleKey]bool) ([]any, error) {
 	out := make([]any, len(x))
 	for i, e := range x {
-		v, err := convertAny(e, false, seen)
+		v, err := convertListElem(e, depth, maxDepth, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -622,7 +634,41 @@ func convertSliceAny(x []any, seen map[cycleKey]bool) ([]any, error) {
 	return out, nil
 }
 
-func convertReflect(rv reflect.Value, listCtx bool, seen map[cycleKey]bool) (any, error) {
+func convertListElem(e any, depth, maxDepth int, seen map[cycleKey]bool) (any, error) {
+	// Direct list elements inherit depth since the enclosing key already counted +1;
+	// deeper nested arrays/containers increment on entry so [[...]] bombs fail cleanly.
+	nextDepth := depth
+	if isNestedListElem(e) {
+		nextDepth++
+		if err := checkDepthLimit(nextDepth, maxDepth); err != nil {
+			return nil, err
+		}
+	}
+	return convertAny(e, false, nextDepth, maxDepth, seen)
+}
+
+func isNestedListElem(v any) bool {
+	if v == nil {
+		return false
+	}
+	if _, ok := v.([]any); ok {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() || (rv.Kind() == reflect.Pointer && rv.Type() == regexpType) {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return false
+	}
+	return (rv.Kind() == reflect.Slice && !isKeyValueStruct(rv.Type().Elem())) ||
+		(rv.Kind() == reflect.Array && rv.Type().Elem().Kind() != reflect.Uint8)
+}
+
+func convertReflect(rv reflect.Value, listCtx bool, depth, maxDepth int, seen map[cycleKey]bool) (any, error) {
 	var pushedBuf [4]cycleKey
 	pushed := pushedBuf[:0]
 	defer func() {
@@ -678,11 +724,11 @@ func convertReflect(rv reflect.Value, listCtx bool, seen map[cycleKey]bool) (any
 		seen[k] = true
 		pushed = append(pushed, k)
 		if isKV {
-			return convertConditionWithSeen(orderedDocToMap(rv), seen)
+			return convertConditionWithSeen(orderedDocToMap(rv), depth, maxDepth, seen)
 		}
-		return convertReflectSlice(rv, seen)
+		return convertReflectSlice(rv, depth, maxDepth, seen)
 	case reflect.Array:
-		return convertReflectSlice(rv, seen)
+		return convertReflectSlice(rv, depth, maxDepth, seen)
 	case reflect.Map:
 		if rv.IsNil() {
 			return nil, nil
@@ -696,17 +742,17 @@ func convertReflect(rv reflect.Value, listCtx bool, seen map[cycleKey]bool) (any
 		}
 		seen[k] = true
 		pushed = append(pushed, k)
-		return convertConditionWithSeen(reflectMapToAny(rv), seen)
+		return convertConditionWithSeen(reflectMapToAny(rv), depth, maxDepth, seen)
 	case reflect.Struct:
-		return convertConditionWithSeen(structToMap(rv), seen)
+		return convertConditionWithSeen(structToMap(rv), depth, maxDepth, seen)
 	}
 	return rv.Interface(), nil
 }
 
-func convertReflectSlice(rv reflect.Value, seen map[cycleKey]bool) ([]any, error) {
+func convertReflectSlice(rv reflect.Value, depth, maxDepth int, seen map[cycleKey]bool) ([]any, error) {
 	out := make([]any, rv.Len())
 	for i := range out {
-		v, err := convertAny(rv.Index(i).Interface(), false, seen)
+		v, err := convertListElem(rv.Index(i).Interface(), depth, maxDepth, seen)
 		if err != nil {
 			return nil, err
 		}

@@ -6,12 +6,12 @@ import (
 )
 
 func init() {
-	register("$and", func(c any) (matcher, error) {
-		children, err := buildConditionList("$and", c)
+	register("$and", func(ctx *compileCtx, c any) (matcher, error) {
+		children, err := buildConditionList(ctx, "$and", c)
 		return allOf(children), err
 	})
-	register("$or", func(c any) (matcher, error) {
-		children, err := buildConditionList("$or", c)
+	register("$or", func(ctx *compileCtx, c any) (matcher, error) {
+		children, err := buildConditionList(ctx, "$or", c)
 		return anyOf(children), err
 	})
 	register("$not", buildNot)
@@ -19,10 +19,13 @@ func init() {
 
 // buildConditionList builds one hash condition per element; an empty list
 // yields an empty allOf (matches anything) or anyOf (matches nothing).
-func buildConditionList(operator string, condition any) ([]matcher, error) {
+func buildConditionList(ctx *compileCtx, operator string, condition any) ([]matcher, error) {
 	list, ok := condition.([]any)
 	if !ok {
 		return nil, invalidCondition("%s needs an array, got %T", operator, condition)
+	}
+	if err := ctx.addNode(); err != nil {
+		return nil, err
 	}
 	children := make([]matcher, 0, len(list))
 	for _, item := range list {
@@ -30,7 +33,7 @@ func buildConditionList(operator string, condition any) ([]matcher, error) {
 		if !ok {
 			return nil, invalidCondition("%s needs an array of objects, got %T", operator, item)
 		}
-		child, err := buildHashCondition(sub)
+		child, err := buildHashCondition(ctx, sub)
 		if err != nil {
 			return nil, err
 		}
@@ -45,8 +48,11 @@ type notMatcher struct {
 	inner *literalMatcher
 }
 
-func buildNot(condition any) (matcher, error) {
-	inner, err := buildLiteral(condition)
+func buildNot(ctx *compileCtx, condition any) (matcher, error) {
+	if err := ctx.addNode(); err != nil {
+		return nil, err
+	}
+	inner, err := buildLiteral(ctx, condition)
 	if err != nil {
 		return nil, err
 	}

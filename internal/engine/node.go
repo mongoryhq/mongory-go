@@ -41,7 +41,7 @@ func matchReflectValue(m matcher, rv reflect.Value) bool {
 	return m.matchReflect(rv)
 }
 
-type builderFunc func(condition any) (matcher, error)
+type builderFunc func(ctx *compileCtx, condition any) (matcher, error)
 
 var operators = map[string]builderFunc{}
 
@@ -55,6 +55,57 @@ func register(operator string, fn builderFunc) {
 
 func invalidCondition(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalidCondition}, args...)...)
+}
+
+func limitExceeded(format string, args ...any) error {
+	return fmt.Errorf("%w: %w: "+format, append([]any{ErrInvalidCondition, ErrLimitExceeded}, args...)...)
+}
+
+type compileCtx struct {
+	maxDepth int
+	maxNodes int
+	depth    int
+	nodes    int
+}
+
+func newCompileCtx(cfg CompileConfig) *compileCtx {
+	return &compileCtx{maxDepth: cfg.MaxDepth, maxNodes: cfg.MaxNodes}
+}
+
+func (c *compileCtx) addNode() error {
+	if c == nil || c.maxNodes <= 0 {
+		return nil
+	}
+	if c.nodes >= c.maxNodes {
+		return limitExceeded("matcher node count exceeds max nodes %d", c.maxNodes)
+	}
+	c.nodes++
+	return nil
+}
+
+func addNodeMatcher(ctx *compileCtx, m matcher) (matcher, error) {
+	if err := ctx.addNode(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (c *compileCtx) enter() (int, error) {
+	if c == nil {
+		return 0, nil
+	}
+	prev := c.depth
+	c.depth++
+	if err := checkDepthLimit(c.depth, c.maxDepth); err != nil {
+		return prev, err
+	}
+	return prev, nil
+}
+
+func (c *compileCtx) leave(prev int) {
+	if c != nil {
+		c.depth = prev
+	}
 }
 
 // allOf matches when every child matches; empty matches anything.
@@ -138,7 +189,7 @@ func sortByPriority(ms []matcher) {
 // buildHashCondition ANDs one matcher per key: registered operators build
 // themselves, an unknown "$" key is rejected as MongoDB does, and any other
 // key is a field lookup. "$options" is consumed by its sibling "$regex".
-func buildHashCondition(condition map[string]any) (matcher, error) {
+func buildHashCondition(ctx *compileCtx, condition map[string]any) (matcher, error) {
 	children := make([]matcher, 0, len(condition))
 	for _, key := range sortedKeys(condition) {
 		var (
@@ -153,13 +204,25 @@ func buildHashCondition(condition map[string]any) (matcher, error) {
 			}
 			err = invalidCondition("$options needs a sibling $regex")
 		case key == "$regex":
-			child, err = buildRegex(condition[key], condition["$options"])
+			var prev int
+			if prev, err = ctx.enter(); err == nil {
+				child, err = buildRegex(ctx, condition[key], condition["$options"])
+				ctx.leave(prev)
+			}
 		case isOperator:
-			child, err = build(condition[key])
+			var prev int
+			if prev, err = ctx.enter(); err == nil {
+				child, err = build(ctx, condition[key])
+				ctx.leave(prev)
+			}
 		case strings.HasPrefix(key, "$"):
 			err = invalidCondition("unknown operator %s", key)
 		default:
-			child, err = buildField(key, condition[key])
+			var prev int
+			if prev, err = ctx.enter(); err == nil {
+				child, err = buildField(ctx, key, condition[key])
+				ctx.leave(prev)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -168,6 +231,9 @@ func buildHashCondition(condition map[string]any) (matcher, error) {
 	}
 	if len(children) == 1 {
 		return children[0], nil
+	}
+	if err := ctx.addNode(); err != nil {
+		return nil, err
 	}
 	sortByPriority(children)
 	return allOf(children), nil
@@ -184,20 +250,20 @@ type literalMatcher struct {
 	arrayRecord matcher
 }
 
-func buildLiteral(condition any) (*literalMatcher, error) {
+func buildLiteral(ctx *compileCtx, condition any) (*literalMatcher, error) {
 	var (
 		dispatched matcher
 		err        error
 	)
 	switch c := condition.(type) {
 	case map[string]any:
-		dispatched, err = buildHashCondition(c)
+		dispatched, err = buildHashCondition(ctx, c)
 	case *regexp.Regexp:
-		dispatched = regexMatcher{re: c}
+		dispatched, err = addNodeMatcher(ctx, regexMatcher{re: c})
 	case nil:
-		dispatched = nullMatcher{}
+		dispatched, err = addNodeMatcher(ctx, nullMatcher{})
 	default:
-		dispatched = eqMatcher{condition: c}
+		dispatched, err = addNodeMatcher(ctx, eqMatcher{condition: c})
 	}
 	if err != nil {
 		return nil, err
@@ -288,8 +354,11 @@ type fieldSlot struct {
 	hasInlineMaps bool
 }
 
-func buildField(field string, condition any) (matcher, error) {
-	literal, err := buildLiteral(condition)
+func buildField(ctx *compileCtx, field string, condition any) (matcher, error) {
+	if err := ctx.addNode(); err != nil {
+		return nil, err
+	}
+	literal, err := buildLiteral(ctx, condition)
 	if err != nil {
 		return nil, err
 	}
@@ -471,11 +540,11 @@ func buildArrayRecord(condition any) (matcher, error) {
 	)
 	switch c := condition.(type) {
 	case map[string]any:
-		child, err = buildHashCondition(splitArrayCondition(c))
+		child, err = buildHashCondition(&compileCtx{}, splitArrayCondition(c))
 	case *regexp.Regexp:
-		child, err = buildElemMatch(map[string]any{"$regex": c})
+		child, err = buildElemMatch(&compileCtx{}, map[string]any{"$regex": c})
 	default:
-		child, err = buildElemMatch(map[string]any{"$eq": c})
+		child, err = buildElemMatch(&compileCtx{}, map[string]any{"$eq": c})
 	}
 	if err != nil {
 		return nil, err

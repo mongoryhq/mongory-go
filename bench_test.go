@@ -2,6 +2,7 @@ package mongory_test
 
 import (
 	"math/rand/v2"
+	"strconv"
 	"testing"
 
 	"github.com/mongoryhq/mongory-go"
@@ -61,6 +62,16 @@ func benchData() ([]M, []benchUser) {
 	return maps, users
 }
 
+func makeLargeInTargets(n int) A {
+	items := make(A, n)
+	items[0] = "usera"
+	items[1] = "userb"
+	for i := 2; i < n; i++ {
+		items[i] = "other-" + strconv.Itoa(i)
+	}
+	return items
+}
+
 var benchCases = []struct {
 	name      string
 	condition M
@@ -69,6 +80,7 @@ var benchCases = []struct {
 	{name: "or", condition: M{"$or": A{M{"age": M{"$gte": 18}}, M{"status": "active"}}}},
 	{name: "nested_and", condition: M{"profile.city": "Taipei", "status": "active", "age": M{"$lt": 40}}},
 	{name: "in_array_field", condition: M{"tags": M{"$in": A{"go", "rust"}}}},
+	{name: "large_in", condition: M{"name": M{"$in": makeLargeInTargets(500)}}},
 	{name: "regex", condition: M{"name": M{"$regex": "^user[a-f]$"}}},
 }
 

@@ -18,8 +18,8 @@ type elemMatchMatcher struct {
 	inner matcher
 }
 
-func buildElemMatch(condition any) (matcher, error) {
-	inner, err := buildElementCondition("$elemMatch", condition)
+func buildElemMatch(ctx *compileCtx, condition any) (matcher, error) {
+	inner, err := buildElementCondition(ctx, "$elemMatch", condition)
 	if err != nil {
 		return nil, err
 	}
@@ -74,8 +74,8 @@ type everyMatcher struct {
 	inner matcher
 }
 
-func buildEvery(condition any) (matcher, error) {
-	inner, err := buildElementCondition("$every", condition)
+func buildEvery(ctx *compileCtx, condition any) (matcher, error) {
+	inner, err := buildElementCondition(ctx, "$every", condition)
 	if err != nil {
 		return nil, err
 	}
@@ -128,12 +128,15 @@ func traceArrayElements(record any, buf *strings.Builder, prefix string, isLast,
 	return matched
 }
 
-func buildElementCondition(operator string, condition any) (matcher, error) {
+func buildElementCondition(ctx *compileCtx, operator string, condition any) (matcher, error) {
 	c, ok := condition.(map[string]any)
 	if !ok {
 		return nil, invalidCondition("%s needs an object, got %T", operator, condition)
 	}
-	return buildHashCondition(c)
+	if err := ctx.addNode(); err != nil {
+		return nil, err
+	}
+	return buildHashCondition(ctx, c)
 }
 
 // sizeMatcher matches an array whose length satisfies a literal condition,
@@ -142,8 +145,11 @@ type sizeMatcher struct {
 	inner *literalMatcher
 }
 
-func buildSize(condition any) (matcher, error) {
-	inner, err := buildLiteral(condition)
+func buildSize(ctx *compileCtx, condition any) (matcher, error) {
+	if err := ctx.addNode(); err != nil {
+		return nil, err
+	}
+	inner, err := buildLiteral(ctx, condition)
 	if err != nil {
 		return nil, err
 	}

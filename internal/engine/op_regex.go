@@ -7,7 +7,7 @@ import (
 )
 
 func init() {
-	register("$regex", func(c any) (matcher, error) { return buildRegex(c, nil) })
+	register("$regex", func(ctx *compileCtx, c any) (matcher, error) { return buildRegex(ctx, c, nil) })
 }
 
 // regexMatcher matches string values only.
@@ -17,7 +17,7 @@ type regexMatcher struct {
 
 // buildRegex accepts a pattern string or *regexp.Regexp, plus the optional
 // MongoDB "$options" sibling (i, m, s; RE2 has no x).
-func buildRegex(condition, options any) (matcher, error) {
+func buildRegex(ctx *compileCtx, condition, options any) (matcher, error) {
 	var flags string
 	if options != nil {
 		s, ok := options.(string)
@@ -36,7 +36,7 @@ func buildRegex(condition, options any) (matcher, error) {
 		if flags != "" {
 			return nil, invalidCondition("$options cannot modify a compiled *regexp.Regexp")
 		}
-		return regexMatcher{re: c}, nil
+		return addNodeMatcher(ctx, regexMatcher{re: c})
 	case string:
 		pattern := c
 		if flags != "" {
@@ -46,7 +46,7 @@ func buildRegex(condition, options any) (matcher, error) {
 		if err != nil {
 			return nil, invalidCondition("$regex: %v", err)
 		}
-		return regexMatcher{re: re}, nil
+		return addNodeMatcher(ctx, regexMatcher{re: re})
 	}
 	return nil, invalidCondition("$regex needs a string or *regexp.Regexp, got %T", condition)
 }

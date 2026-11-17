@@ -21,17 +21,39 @@ type (
 	A = []any
 )
 
+const (
+	// DefaultMaxDepth caps condition nesting depth during compilation.
+	DefaultMaxDepth = engine.DefaultMaxDepth
+	// DefaultMaxNodes caps the number of compiled matcher nodes.
+	DefaultMaxNodes = engine.DefaultMaxNodes
+)
+
 // ErrInvalidCondition is wrapped by every error returned from Compile or Match
-// for a malformed condition (unknown operator, invalid argument type, or bad
-// $regex / $options); check with errors.Is.
+// for a malformed condition (unknown operator, invalid argument type, bad
+// $regex / $options, or exceeded limits); check with errors.Is.
 var ErrInvalidCondition = engine.ErrInvalidCondition
+
+// ErrLimitExceeded is wrapped alongside ErrInvalidCondition when a condition
+// exceeds the configured MaxDepth or MaxNodes limit.
+var ErrLimitExceeded = engine.ErrLimitExceeded
+
+// Option configures Compile, MustCompile, and Match behavior.
+type Option = engine.Option
+
+// WithMaxDepth overrides DefaultMaxDepth (64) during compilation.
+// A non-positive value disables the depth limit.
+func WithMaxDepth(depth int) Option { return engine.WithMaxDepth(depth) }
+
+// WithMaxNodes overrides DefaultMaxNodes (4096) during compilation.
+// A non-positive value disables the node limit.
+func WithMaxNodes(nodes int) Option { return engine.WithMaxNodes(nodes) }
 
 // Compile parses and validates condition once into an immutable, concurrent-safe
 // *Matcher. Like the mongo-go-driver filter parameter, condition accepts any
 // document shape: mongory.M, map[string]any, bson.M, bson.D, a struct, or nil
 // (which matches everything).
-func Compile(condition any) (*Matcher, error) {
-	tree, err := engine.Compile(condition)
+func Compile(condition any, opts ...Option) (*Matcher, error) {
+	tree, err := engine.Compile(condition, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +67,8 @@ func Compile(condition any) (*Matcher, error) {
 //	var activeUsers = mongory.MustCompile(mongory.M{"status": "active"})
 //
 // Never pass untrusted or runtime input to MustCompile; use Compile instead.
-func MustCompile(condition any) *Matcher {
-	m, err := Compile(condition)
+func MustCompile(condition any, opts ...Option) *Matcher {
+	m, err := Compile(condition, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -56,8 +78,8 @@ func MustCompile(condition any) *Matcher {
 // Match compiles condition and reports whether record satisfies it.
 // For repeated checks against many records, compile once with Compile and reuse
 // (*Matcher).Match or Filter.
-func Match(condition any, record any) (bool, error) {
-	m, err := Compile(condition)
+func Match(condition any, record any, opts ...Option) (bool, error) {
+	m, err := Compile(condition, opts...)
 	if err != nil {
 		return false, err
 	}

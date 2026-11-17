@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -678,6 +679,246 @@ func TestCycleSafety(t *testing.T) {
 		}
 		if _, trace2 := mongory.MustCompile(M{"meta": 1}).Trace(M{"meta": cycIntMap}); !strings.Contains(trace2, "<cycle>") {
 			t.Fatalf("expected trace with <cycle> for non-string cyclic map:\n%s", trace2)
+		}
+	})
+}
+
+func makeNestedCondition(depth int) M {
+	cur := M{"leaf": 1}
+	for range depth - 1 {
+		cur = M{"next": cur}
+	}
+	return cur
+}
+
+func TestCompileLimits(t *testing.T) {
+	t.Run("default max depth enforces 64 and rejects 65", func(t *testing.T) {
+		okCond := makeNestedCondition(mongory.DefaultMaxDepth)
+		if _, err := mongory.Compile(okCond); err != nil {
+			t.Fatalf("depth %d should succeed, got %v", mongory.DefaultMaxDepth, err)
+		}
+
+		tooDeep := makeNestedCondition(mongory.DefaultMaxDepth + 1)
+		if _, err := mongory.Compile(tooDeep); !errors.Is(err, mongory.ErrLimitExceeded) || !errors.Is(err, mongory.ErrInvalidCondition) {
+			t.Fatalf("depth %d: err = %v, want ErrLimitExceeded and ErrInvalidCondition", mongory.DefaultMaxDepth+1, err)
+		}
+
+		dotKeys := make([]string, mongory.DefaultMaxDepth+1)
+		for i := range dotKeys {
+			dotKeys[i] = "a"
+		}
+		if _, err := mongory.Compile(M{strings.Join(dotKeys, "."): 1}); !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("deep dotted key should fail with ErrLimitExceeded, got %v", err)
+		}
+
+		var deepSlice any = 1
+		for range mongory.DefaultMaxDepth + 2 {
+			deepSlice = A{deepSlice}
+		}
+		if _, err := mongory.Compile(M{"x": M{"$in": deepSlice}}); !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("deep nested slice should fail with ErrLimitExceeded, got %v", err)
+		}
+	})
+
+	t.Run("WithMaxDepth overrides and non-positive disables limit", func(t *testing.T) {
+		if _, err := mongory.Compile(M{}, mongory.WithMaxDepth(1), mongory.WithMaxNodes(1)); err != nil {
+			t.Fatalf("empty condition failed minimal limits: %v", err)
+		}
+
+		depth3 := makeNestedCondition(3)
+		m, err := mongory.Compile(depth3, mongory.WithMaxDepth(3))
+		if err != nil {
+			t.Fatalf("depth 3 with MaxDepth(3) failed: %v", err)
+		}
+		if !m.Match(makeNestedCondition(3)) {
+			t.Fatal("compiled depth-3 matcher did not match")
+		}
+
+		if _, err := mongory.Compile(M{"a.b.c": 1}, mongory.WithMaxDepth(3)); err != nil {
+			t.Fatalf("dot path depth 3 with MaxDepth(3) failed: %v", err)
+		}
+		if _, err := mongory.Compile(M{"a.b.c.d": 1}, mongory.WithMaxDepth(3)); !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("dot path depth 4 with MaxDepth(3) should fail, got %v", err)
+		}
+		if _, err := mongory.Compile(M{"$or": A{M{"$and": A{M{"a": 1}}}}}, mongory.WithMaxDepth(3)); err != nil {
+			t.Fatalf("depth 3 composite with MaxDepth(3) failed: %v", err)
+		}
+		if _, err := mongory.Compile(M{"a": M{"b": M{"$not": M{"$gt": 1}}}}, mongory.WithMaxDepth(3)); !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("depth 4 operator with MaxDepth(3) should fail, got %v", err)
+		}
+		if _, err := mongory.Compile(M{"a": M{"$eq": makeNestedCondition(5)}}, mongory.WithMaxDepth(4)); !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("deep $eq value should respect MaxDepth, got %v", err)
+		}
+
+		deep80 := makeNestedCondition(80)
+		m80, err := mongory.Compile(deep80, mongory.WithMaxDepth(0))
+		if err != nil {
+			t.Fatalf("WithMaxDepth(0) should allow deep query, got %v", err)
+		}
+		if !m80.Match(deep80) {
+			t.Fatal("deep 80 matcher did not match")
+		}
+		if ok, err := mongory.Match(M{"a.b.c": 1}, M{"a": M{"b": M{"c": 1}}}, mongory.WithMaxDepth(2)); ok || !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("one-shot Match should enforce WithMaxDepth, got (%v, %v)", ok, err)
+		}
+	})
+
+	t.Run("MaxNodes rejects wide trees and exempts large $in lists", func(t *testing.T) {
+		m5, err := mongory.Compile(M{"a": 1, "b": 2}, mongory.WithMaxNodes(5))
+		if err != nil || !m5.Match(M{"a": 1, "b": 2}) {
+			t.Fatalf("5-node condition with MaxNodes(5) failed: %v", err)
+		}
+		if _, err := mongory.Compile(M{"a": 1, "b": 2, "c": 3}, mongory.WithMaxNodes(5)); !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("7-node condition with MaxNodes(5) should fail, got %v", err)
+		}
+
+		large := make(A, 5000)
+		for i := range large {
+			large[i] = i
+		}
+		if m, err := mongory.Compile(M{"id": M{"$in": large}}, mongory.WithMaxNodes(3)); err != nil || !m.Match(M{"id": 4999}) {
+			t.Fatalf("large $in should count as 1 matcher node: %v", err)
+		}
+
+		wide := make(A, 2500)
+		for i := range wide {
+			wide[i] = M{"k" + strconv.Itoa(i): i}
+		}
+		if _, err := mongory.Compile(M{"$or": wide}); !errors.Is(err, mongory.ErrLimitExceeded) {
+			t.Fatalf("wide $or exceeding DefaultMaxNodes should fail, got %v", err)
+		}
+		if _, err := mongory.Compile(M{"$or": wide}, mongory.WithMaxNodes(-1)); err != nil {
+			t.Fatalf("WithMaxNodes(-1) should disable node limit, got %v", err)
+		}
+	})
+}
+
+func TestLargeInLookup(t *testing.T) {
+	now := time.Now()
+	laterUTC := time.Date(2026, 6, 15, 12, 0, 0, 123_000_000, time.UTC)
+	oidMatch := objectID{1, 2, 3, 4}
+	oidOther := objectID{9, 9, 9, 9}
+	reA := regexp.MustCompile("^alpha")
+
+	// Build a > 16 item mixed list to trigger compile-time hash lookup alongside
+	// fallback containers.
+	baseItems := A{
+		nil,
+		true,
+		"hit",
+		42,
+		int64(9007199254740993),   // 2^53 + 1
+		float64(9007199254740992), // 2^53 (exact integral float)
+		float64(30.0),
+		float64(30.5),
+		math.Copysign(0, -1), // -0.0
+		math.NaN(),
+		math.Inf(1),
+		uint64(math.MaxUint64),
+		now,
+		laterUTC,
+		oidMatch,
+		M{"k": 1, "m": "x"},
+		A{1, "two"},
+		reA,
+	}
+	for i := range 20 {
+		baseItems = append(baseItems, "pad_"+strconv.Itoa(i))
+	}
+
+	inM := mongory.MustCompile(M{"v": M{"$in": baseItems}})
+	ninM := mongory.MustCompile(M{"v": M{"$nin": baseItems}})
+
+	type recHolder struct {
+		V any `bson:"v"`
+	}
+
+	tests := []struct {
+		name string
+		rec  any
+		want bool
+	}{
+		{"nil value matches nil in $in", M{"v": nil}, true},
+		{"missing key never matches nil in $in", M{}, false},
+		{"nil pointer matches nil in $in", recHolder{V: (*int)(nil)}, true},
+		{"typed nil slice matches nil in $in", recHolder{V: ([]string)(nil)}, true},
+		{"bool true matches", M{"v": true}, true},
+		{"bool false mismatches", M{"v": false}, false},
+		{"string matches", M{"v": "hit"}, true},
+		{"pad string matches", M{"v": "pad_19"}, true},
+		{"string misses", M{"v": "miss"}, false},
+		{"int matches int", M{"v": 42}, true},
+		{"int matches integral float", M{"v": 42.0}, true},
+		{"int8 matches via reflect", recHolder{V: int8(42)}, true},
+		{"json.Number int matches", M{"v": json.Number("42")}, true},
+		{"json.Number float matches int", M{"v": json.Number("42.0")}, true},
+		{"integral float matches int record", M{"v": 30}, true},
+		{"integral float matches float record", M{"v": 30.0}, true},
+		{"fractional float matches", M{"v": 30.5}, true},
+		{"2^53 boundary rejects adjacent float for int item", M{"v": float64(9007199254740992)}, true},
+		{"2^53 + 1 exact int matches int", M{"v": int64(9007199254740993)}, true},
+		{"2^53+1 does not match 2^53 float", mongory.M{"v": float64(9007199254740994)}, false},
+		{"-0.0 matches int 0", M{"v": 0}, true},
+		{"-0.0 matches +0.0", M{"v": 0.0}, true},
+		{"NaN never matches NaN", M{"v": math.NaN()}, false},
+		{"+Inf matches +Inf", M{"v": math.Inf(1)}, true},
+		{"MaxUint64 matches float", M{"v": uint64(math.MaxUint64)}, true},
+		{"MaxInt64 rejects MaxUint64 float", M{"v": int64(math.MaxInt64)}, false},
+		{"time.Now monotonic stripped matches UTC copy", M{"v": now.Round(0).UTC()}, true},
+		{"time matches fixed timezone copy", M{"v": laterUTC.In(time.FixedZone("x", 3600))}, true},
+		{"DateTime timeValuer matches time.Time", M{"v": dateTime(laterUTC.UnixMilli())}, true},
+		{"ObjectID matches via hash", M{"v": oidMatch}, true},
+		{"ObjectID misses", M{"v": oidOther}, false},
+		{"different named [4]byte misses", M{"v": [4]byte{1, 2, 3, 4}}, false},
+		{"map fallback key order independent", M{"v": M{"m": "x", "k": 1}}, true},
+		{"nested slice element in array fallback matches", M{"v": A{A{1, "two"}}}, true},
+		{"typed nested slice element in array fallback matches", M{"v": []any{[]int{1}, A{1, "two"}}}, true},
+		{"flat array checks element intersection only", M{"v": A{1, "two"}}, false},
+		{"regexp pointer fallback matches", M{"v": reA}, true},
+		{"array intersection with large $in", M{"v": []string{"no", "pad_12"}}, true},
+		{"array disjoint with large $in", M{"v": []string{"no", "nope"}}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := inM.Match(tt.rec); got != tt.want {
+				t.Errorf("$in Match(%#v) = %v, want %v", tt.rec, got, tt.want)
+			}
+			if got := ninM.Match(tt.rec); got != !tt.want {
+				t.Errorf("$nin Match(%#v) = %v, want %v", tt.rec, got, !tt.want)
+			}
+		})
+	}
+
+	t.Run("large $in without false 2^53 rounding match", func(t *testing.T) {
+		items := make(A, 20)
+		for i := range items {
+			items[i] = i
+		}
+		items[0] = float64(9007199254740992) // 2^53
+		m := mongory.MustCompile(M{"n": M{"$in": items}})
+		if m.Match(M{"n": int64(9007199254740993)}) {
+			t.Fatal("2^53 float item must not match 2^53+1 int64 record")
+		}
+		if !m.Match(M{"n": int64(9007199254740992)}) {
+			t.Fatal("2^53 float item should match exact 2^53 int64 record")
+		}
+	})
+
+	t.Run("indexed $in orders before $regex", func(t *testing.T) {
+		items := make(A, 100)
+		for i := range items {
+			items[i] = "id-" + strconv.Itoa(i)
+		}
+		m := mongory.MustCompile(M{
+			"name": M{"$regex": "^user"},
+			"code": M{"$in": items},
+		})
+		explain := m.Explain()
+		inIdx := strings.Index(explain, `Field("code")`)
+		reIdx := strings.Index(explain, `Field("name")`)
+		if inIdx < 0 || reIdx < 0 || inIdx > reIdx {
+			t.Fatalf("expected O(1) $in Field(\"code\") before $regex Field(\"name\"):\n%s", explain)
 		}
 	})
 }

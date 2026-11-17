@@ -26,12 +26,12 @@ type boolMatcher struct {
 }
 
 func buildBoolOperator(op string, test func(record any, want bool) bool, testReflect func(rv reflect.Value, want bool) bool) builderFunc {
-	return func(c any) (matcher, error) {
+	return func(ctx *compileCtx, c any) (matcher, error) {
 		want, ok := c.(bool)
 		if !ok {
 			return nil, invalidCondition("$%s needs a boolean, got %T", strings.ToLower(op), c)
 		}
-		return boolMatcher{op: op, want: want, test: test, testReflect: testReflect}, nil
+		return addNodeMatcher(ctx, boolMatcher{op: op, want: want, test: test, testReflect: testReflect})
 	}
 }
 

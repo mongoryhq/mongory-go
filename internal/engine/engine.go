@@ -11,6 +11,38 @@ import (
 // malformed condition.
 var ErrInvalidCondition = errors.New("mongory: invalid condition")
 
+// ErrLimitExceeded is wrapped (alongside ErrInvalidCondition) when a condition
+// exceeds the configured MaxDepth or MaxNodes limit.
+var ErrLimitExceeded = errors.New("condition limit exceeded")
+
+const (
+	// DefaultMaxDepth caps condition nesting depth during compilation.
+	DefaultMaxDepth = 64
+	// DefaultMaxNodes caps the number of compiled matcher nodes.
+	DefaultMaxNodes = 4096
+)
+
+// CompileConfig controls compile-time resource limits.
+type CompileConfig struct {
+	MaxDepth int
+	MaxNodes int
+}
+
+// Option configures Compile behavior.
+type Option func(*CompileConfig)
+
+// WithMaxDepth overrides DefaultMaxDepth (64). A non-positive value disables
+// the depth limit.
+func WithMaxDepth(depth int) Option {
+	return func(c *CompileConfig) { c.MaxDepth = depth }
+}
+
+// WithMaxNodes overrides DefaultMaxNodes (4096). A non-positive value disables
+// the node limit.
+func WithMaxNodes(nodes int) Option {
+	return func(c *CompileConfig) { c.MaxNodes = nodes }
+}
+
 // Tree is a compiled condition. It is safe for concurrent use.
 type Tree struct {
 	root matcher
@@ -18,12 +50,21 @@ type Tree struct {
 
 // Compile builds the matcher tree once; Match then only walks it. condition
 // is any document: map[string]any, bson.M, bson.D, a struct, or nil.
-func Compile(condition any) (*Tree, error) {
-	doc, err := convertRootCondition(condition)
+func Compile(condition any, opts ...Option) (*Tree, error) {
+	cfg := CompileConfig{
+		MaxDepth: DefaultMaxDepth,
+		MaxNodes: DefaultMaxNodes,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	doc, err := convertRootCondition(condition, cfg.MaxDepth)
 	if err != nil {
 		return nil, err
 	}
-	root, err := buildHashCondition(doc)
+	root, err := buildHashCondition(newCompileCtx(cfg), doc)
 	if err != nil {
 		return nil, err
 	}
