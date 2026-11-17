@@ -385,10 +385,11 @@ func getStructInfo(t reflect.Type) *structInfo {
 	return cached.(*structInfo)
 }
 
-// collectStructFields follows the mongo-go-driver struct codec: exported
-// fields only, key from the tag or the lowercased field name, and only fields
-// tagged ",inline" are flattened. Direct fields are added before inlined
-// ones, so a shallower field shadows a deeper one with the same key.
+// collectStructFields resolves exported struct fields only: key precedence is
+// mongory tag, bson tag, json tag, bare tag, or the exact Go field name (no
+// lowercasing). "-" tags also fall back to the exact Go field name. Only fields
+// tagged ",inline" are flattened; direct fields are added before inlined ones,
+// so a shallower field shadows a deeper one.
 func collectStructFields(t reflect.Type, prefix []int, seen map[string]bool, out *[]structField) {
 	var inlined []reflect.StructField
 	for i := range t.NumField() {
@@ -397,9 +398,6 @@ func collectStructFields(t reflect.Type, prefix []int, seen map[string]bool, out
 			continue
 		}
 		name, inline := structFieldKey(sf)
-		if name == "-" {
-			continue
-		}
 		index := append(slices.Clone(prefix), i)
 		if inline {
 			switch ft := derefType(sf.Type); {
@@ -429,23 +427,45 @@ func derefType(t reflect.Type) reflect.Type {
 	return t
 }
 
-// structFieldKey reads the mongory tag, else the bson tag, else falls back to
-// the lowercased field name, as the mongo-go-driver does. Like the driver, a
-// bare tag without any "key:" pair (`"name,omitempty"`) counts as a bson tag.
+var structTagOrder = []string{"mongory", "bson", "json"}
+
+// structFieldKey resolves a struct field key by checking mongory, bson, json,
+// and bare (without "key:") tags in order; the first explicit name wins,
+// otherwise it falls back to sf.Name without lowercasing. Empty names (such
+// as ",omitempty") and "-" tags yield no name so resolution continues to the
+// next tag or sf.Name (json:"-," keeps literal "-").
 func structFieldKey(sf reflect.StructField) (name string, inline bool) {
-	tag, ok := sf.Tag.Lookup("mongory")
-	if !ok {
-		tag, ok = sf.Tag.Lookup("bson")
+	for _, key := range structTagOrder {
+		tag, ok := sf.Tag.Lookup(key)
+		if !ok {
+			continue
+		}
+		n, tagInline := parseFieldTag(tag, key == "json")
+		inline = inline || tagInline
+		if n != "" {
+			return n, inline
+		}
 	}
-	if !ok && !strings.Contains(string(sf.Tag), ":") {
-		tag = string(sf.Tag)
+	if !strings.Contains(string(sf.Tag), ":") {
+		n, tagInline := parseFieldTag(string(sf.Tag), false)
+		inline = inline || tagInline
+		if n != "" {
+			return n, inline
+		}
 	}
-	name, opts, _ := strings.Cut(tag, ",")
+	return sf.Name, inline
+}
+
+func parseFieldTag(tag string, isJSON bool) (name string, inline bool) {
+	if isJSON && tag == "-" {
+		return "", false
+	}
+	n, opts, _ := strings.Cut(tag, ",")
 	inline = hasInlineOption(opts)
-	if name == "" {
-		name = strings.ToLower(sf.Name)
+	if !isJSON && n == "-" {
+		return "", inline
 	}
-	return name, inline
+	return n, inline
 }
 
 func hasInlineOption(opts string) bool {

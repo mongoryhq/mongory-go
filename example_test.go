@@ -10,7 +10,7 @@ type User struct {
 	Name   string   `bson:"name"`
 	Age    int      `bson:"age"`
 	Tags   []string `bson:"tags"`
-	Active bool     // no tag: key is "active", as in the mongo-go-driver
+	Active bool     // no tag: key is "Active" (exact Go field name)
 }
 
 var adults = mongory.MustCompile(mongory.M{"age": mongory.M{"$gte": 18}})
@@ -23,7 +23,7 @@ func ExampleFilter() {
 	}
 
 	m, err := mongory.Compile(mongory.M{
-		"active": true,
+		"Active": true,
 		"$or": mongory.A{
 			mongory.M{"tags": "go"},
 			mongory.M{"age": mongory.M{"$lt": 18}},

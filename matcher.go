@@ -14,8 +14,8 @@ type Matcher struct {
 
 // Match reports whether record satisfies the compiled condition. record may be
 // a map, bson.M, bson.D, slice, struct (or pointer to one), or scalar. Struct
-// fields resolve via the mongory or bson tag, falling back to the lowercased
-// field name; only ",inline" fields are flattened.
+// fields resolve via mongory, bson, or json tag, falling back to the exact Go
+// field name (including when tagged "-"); only ",inline" fields are flattened.
 func (m *Matcher) Match(record any) bool {
 	return m.tree.Match(record)
 }

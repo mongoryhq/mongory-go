@@ -31,16 +31,24 @@ type Meta struct {
 }
 
 type person struct {
-	Base     `bson:",inline"`
-	Meta                    // embedded without inline: a "meta" subdocument, as in the driver
-	Name     string         `mongory:"full_name" bson:"name"`
-	Age      uint8          `bson:"age,omitempty"`
-	Tags     []string       `bson:"tags"`
-	Address  *Address       `bson:"address"`
-	Secret   string         `bson:"-"`
-	Nickname string         `json:"nick"` // json tag ignored: key "nickname"
-	Extra    map[string]any `bson:",inline"`
-	hidden   string
+	Base        `bson:",inline"`
+	Meta                       // embedded without inline: "Meta" subdocument (exact field name)
+	Name        string         `mongory:"full_name" bson:"name" json:"display_name"`
+	Age         uint8          `bson:"age,omitempty" json:"years"`
+	Tags        []string       `bson:"tags"`
+	Address     *Address       `bson:"address"`
+	Secret      string         `bson:"-"`
+	Computed    string         `bson:"-" json:"computed"`
+	BsonEmpty   string         `bson:",omitempty" json:"from_json"`
+	MongoryDash string         `mongory:"-"`
+	Nickname    string         `json:"nick,omitempty"`
+	UserCode    string         `json:",omitempty"`
+	ProductID   string         `clone:"true"`
+	PrivateKey  string         `json:"-"`
+	PublicDash  string         `json:"-,"`
+	JSONSecret  string         `json:"-" bson:"json_secret"`
+	Extra       map[string]any `bson:",inline"`
+	hidden      string
 }
 
 type role string
@@ -76,16 +84,24 @@ func (d dateTime) Time() time.Time { return time.UnixMilli(int64(d)).UTC() }
 
 func TestMatcherMatch(t *testing.T) {
 	alice := person{
-		Base:     Base{ID: 7},
-		Meta:     Meta{Source: "web"},
-		Name:     "Alice",
-		Age:      30,
-		Tags:     []string{"go", "ruby"},
-		Address:  &Address{City: "Taipei"},
-		Secret:   "s",
-		Nickname: "al",
-		Extra:    M{"plan": "pro", "full_name": "shadowed"},
-		hidden:   "h",
+		Base:        Base{ID: 7},
+		Meta:        Meta{Source: "web"},
+		Name:        "Alice",
+		Age:         30,
+		Tags:        []string{"go", "ruby"},
+		Address:     &Address{City: "Taipei"},
+		Secret:      "s",
+		Computed:    "c",
+		BsonEmpty:   "bj",
+		MongoryDash: "md",
+		Nickname:    "al",
+		UserCode:    "U-1",
+		ProductID:   "P-9",
+		PrivateKey:  "priv",
+		PublicDash:  "dash",
+		JSONSecret:  "kept",
+		Extra:       M{"plan": "pro", "full_name": "shadowed"},
+		hidden:      "h",
 	}
 	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	oid := objectID{1, 2, 3}
@@ -137,27 +153,42 @@ func TestMatcherMatch(t *testing.T) {
 		{"time equality", M{"at": createdAt}, M{"at": createdAt.In(time.FixedZone("x", 3600))}, true},
 		{"typed map record", M{"n": 1}, map[string]int{"n": 1}, true},
 		{"typed slice record", M{"0": "a"}, []string{"a", "b"}, true},
-		{"struct mongory tag wins", M{"full_name": "Alice"}, alice, true},
-		{"struct bson tag", M{"age": 30, "address.city": "Taipei"}, alice, true},
+		{"struct mongory tag wins", M{"full_name": "Alice", "name": nil, "display_name": nil}, alice, true},
+		{"struct bson tag wins over json", M{"age": 30, "years": nil, "address.city": "Taipei"}, alice, true},
 		{"struct pointer", M{"age": 30}, &alice, true},
 		{"struct typed slice", M{"tags": "ruby"}, alice, true},
 		{"struct inline embedded", M{"_id": 7}, alice, true},
-		{"struct embedded is subdocument", M{"meta.source": "web"}, alice, true},
+		{"struct embedded uses exact field name subdocument", M{"Meta.source": "web"}, alice, true},
+		{"struct embedded not lowercased", M{"meta.source": "web"}, alice, false},
+		{"struct embedded lowercased key absent", M{"meta": nil}, alice, true},
 		{"struct embedded not flattened", M{"source": nil}, alice, true},
-		{"struct untagged key is lowercased", M{"nickname": "al"}, alice, true},
-		{"struct json tag ignored", M{"nick": nil}, alice, true},
-		{"struct dash tag skipped", M{"secret": nil}, alice, true},
+		{"struct json tag resolves field", M{"nick": "al"}, alice, true},
+		{"struct json tag ignores Go field name", M{"Nickname": nil}, alice, true},
+		{"struct json omitempty empty name uses exact field name", M{"UserCode": "U-1", "usercode": nil}, alice, true},
+		{"struct untagged exact field name", M{"ProductID": "P-9"}, alice, true},
+		{"struct untagged not lowercased", M{"productid": nil, "product_id": nil}, alice, true},
+		{"struct json dash tag uses exact field name", M{"PrivateKey": "priv", "privatekey": nil}, alice, true},
+		{"struct json escaped dash matches literal key", M{"-": "dash", "PublicDash": nil}, alice, true},
+		{"struct bson tag overrides json dash", M{"json_secret": "kept", "JSONSecret": nil}, alice, true},
+		{"struct bson dash tag uses exact field name", M{"Secret": "s", "secret": nil}, alice, true},
+		{"struct bson dash falls back to json", M{"computed": "c", "Computed": nil}, alice, true},
+		{"struct bson empty name falls back to json", M{"from_json": "bj", "BsonEmpty": nil}, alice, true},
+		{"struct mongory dash falls back to field name", M{"MongoryDash": "md"}, alice, true},
 		{"struct unexported skipped", M{"hidden": nil}, alice, true},
 		{"struct inline map", M{"plan": "pro"}, alice, true},
 		{"struct inline map never overrides fields", M{"full_name": "Alice"}, alice, true},
-		{"struct nil inline pointer", M{"_id": nil, "role": "admin"}, wrapper{Role: "admin"}, true},
+		{"struct nil inline pointer", M{"_id": nil, "Role": "admin"}, wrapper{Role: "admin"}, true},
 		{"struct nil inline pointer falls back to inline map", M{"_id": 99}, wrapper{Role: "admin", Extra: M{"_id": 99}}, true},
-		{"struct time field equality", M{"at": createdAt}, event{At: createdAt}, true},
-		{"struct time field not treated as subdocument", M{"at.year": M{"$exists": true}}, event{At: createdAt}, false},
-		{"struct json.Number equality and regex", M{"count": 42, "raw": M{"$regex": "^abc"}}, event{Count: json.Number("42"), Raw: json.Number("abcdef")}, true},
+		{"struct time field equality", M{"At": createdAt}, event{At: createdAt}, true},
+		{"struct time field not treated as subdocument", M{"At.year": M{"$exists": true}}, event{At: createdAt}, false},
+		{"struct json.Number equality and regex", M{"Count": 42, "Raw": M{"$regex": "^abc"}}, event{Count: json.Number("42"), Raw: json.Number("abcdef")}, true},
 		{"empty struct not present", M{"$present": false}, struct{}{}, true},
 		{"struct slice $eq/$ne element match", M{"tags": M{"$eq": "ruby"}, "tags.$ne": "python"}, alice, true},
 		{"struct as condition", Meta{Source: "web"}, M{"source": "web"}, true},
+		{"struct as condition with json and exact keys", struct {
+			ProductID string
+			Nick      string `json:"nick"`
+		}{ProductID: "p1", Nick: "al"}, M{"ProductID": "p1", "nick": "al"}, true},
 		{"nil pointer record", M{"a": 1}, (*person)(nil), false},
 		{"bson.D condition", bsonD{{"age", 30}, {"name", "Al"}}, M{"age": 30, "name": "Al"}, true},
 		{"bson.D condition mismatch", bsonD{{"age", 30}}, M{"age": 31}, false},
@@ -332,9 +363,9 @@ func TestExplainAndTrace(t *testing.T) {
 
 func TestMatcherConcurrentSafety(t *testing.T) {
 	m := mongory.MustCompile(M{
-		"tags":   "go",
-		"scores": M{"$gt": 5, "$lt": 8},
-		"note":   M{"$regex": "^ok", "$options": "i"},
+		"Tags":   "go",
+		"Scores": M{"$gt": 5, "$lt": 8},
+		"Note":   M{"$regex": "^ok", "$options": "i"},
 	})
 
 	type structDoc struct {
@@ -343,9 +374,9 @@ func TestMatcherConcurrentSafety(t *testing.T) {
 		Note   string
 	}
 	type structDocAlt struct {
-		Note   string
-		Tags   []string
-		Scores []int
+		Remark string   `json:"Note"`
+		Labels []string `json:"Tags"`
+		Points []int    `json:"Scores"`
 	}
 
 	const workers = 8
@@ -358,9 +389,9 @@ func TestMatcherConcurrentSafety(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iters {
-				doc := M{"tags": A{"ruby", "go"}, "scores": A{3, 6, 9}, "note": "OK-1"}
+				doc := M{"Tags": A{"ruby", "go"}, "Scores": A{3, 6, 9}, "Note": "OK-1"}
 				s1 := structDoc{Tags: []string{"ruby", "go"}, Scores: []int{3, 6, 9}, Note: "OK-1"}
-				s2 := structDocAlt{Tags: []string{"ruby", "go"}, Scores: []int{3, 6, 9}, Note: "OK-1"}
+				s2 := structDocAlt{Labels: []string{"ruby", "go"}, Points: []int{3, 6, 9}, Remark: "OK-1"}
 				if !m.Match(doc) || !m.Match(&s1) || !m.Match(s2) {
 					errs <- errors.New("expected match")
 					return
@@ -373,7 +404,7 @@ func TestMatcherConcurrentSafety(t *testing.T) {
 					errs <- errors.New("expected explain output")
 					return
 				}
-				if m.Match(M{"tags": "py", "scores": 2, "note": "no"}) || m.Match(&structDoc{Note: "no"}) {
+				if m.Match(M{"Tags": "py", "Scores": 2, "Note": "no"}) || m.Match(&structDoc{Note: "no"}) {
 					errs <- errors.New("unexpected match")
 					return
 				}

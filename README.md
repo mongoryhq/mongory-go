@@ -86,7 +86,7 @@ Example `Trace` output:
 ## Semantics & Data Shapes
 
 - **Conditions** accept any document shape: `mongory.M`, `map[string]any`, `bson.M`, `bson.D`, a struct, or `nil` (matches everything). Dot paths (`"address.city"`), escaped dots (`"a\\.b"`), array indexes (`"tags.0"`, `"tags.-1"`), and MongoDB implicit array matching apply.
-- **Records** may be maps, `bson.M`/`bson.D`, structs or struct pointers, slices, or scalars. Struct fields follow the mongo-go-driver convention: `mongory` tag override, then `bson` tag, else lowercased field name; only `,inline` fields are flattened. `ObjectID` (`[N]byte`) and `DateTime` (`Time() time.Time`) shapes are supported without importing a BSON driver.
+- **Records** may be maps, `bson.M`/`bson.D`, structs or struct pointers, slices, or scalars. Struct fields resolve via `mongory` tag, `bson` tag, or `json` tag, falling back to the exact Go field name (including `"-"` tags); only `,inline` fields are flattened. `ObjectID` (`[N]byte`) and `DateTime` (`Time() time.Time`) shapes are supported without importing a BSON driver.
 - **Operators**: `$eq $ne $gt $gte $lt $lte $in $nin $exists $present $and $or $not $elemMatch $every $size $regex` (with `$options`: `i`, `m`, `s`). Unknown `$` operators are rejected by `Compile`.
 
 ## Conformance & Benchmarks
