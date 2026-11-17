@@ -19,15 +19,11 @@ type Tree struct {
 // Compile builds the matcher tree once; Match then only walks it. condition
 // is any document: map[string]any, bson.M, bson.D, a struct, or nil.
 func Compile(condition any) (*Tree, error) {
-	var doc map[string]any
-	switch c := normalize(condition).(type) {
-	case nil:
-	case map[string]any:
-		doc = c
-	default:
-		return nil, invalidCondition("condition must be a document, got %T", condition)
+	doc, err := convertRootCondition(condition)
+	if err != nil {
+		return nil, err
 	}
-	root, err := buildHashCondition(convertCondition(doc))
+	root, err := buildHashCondition(doc)
 	if err != nil {
 		return nil, err
 	}

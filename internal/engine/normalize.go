@@ -26,6 +26,7 @@ var (
 	timeType        = reflect.TypeOf(time.Time{})
 	timeValuerType  = reflect.TypeOf((*timeValuer)(nil)).Elem()
 	jsonNumberType  = reflect.TypeOf(json.Number(""))
+	regexpType      = reflect.TypeOf((*regexp.Regexp)(nil))
 	structInfoCache sync.Map // reflect.Type -> *structInfo
 	timeValuerCache sync.Map // reflect.Type -> bool
 )
@@ -146,13 +147,24 @@ func extractTime(rv reflect.Value) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+const maxPointerDepth = 64
+
 // unwrapReflect dereferences pointers and interfaces and maps nil containers
 // (slice, map, pointer, interface) to ok=false (representing nil).
+// *regexp.Regexp is preserved intact, and pointer cycles stop at maxPointerDepth.
 func unwrapReflect(rv reflect.Value) (reflect.Value, bool) {
+	depth := 0
 	for rv.IsValid() {
 		switch rv.Kind() {
 		case reflect.Pointer, reflect.Interface:
 			if rv.IsNil() {
+				return reflect.Value{}, false
+			}
+			if rv.Kind() == reflect.Pointer && rv.Type() == regexpType {
+				return rv, true
+			}
+			depth++
+			if depth > maxPointerDepth {
 				return reflect.Value{}, false
 			}
 			rv = rv.Elem()
@@ -180,60 +192,70 @@ func isReflectList(rv reflect.Value) bool {
 	return false
 }
 
-func normalizeReflect(rv reflect.Value) any {
-	switch rv.Kind() {
-	case reflect.Pointer, reflect.Interface:
-		if rv.IsNil() {
-			return nil
-		}
-		return normalize(rv.Elem().Interface())
-	}
-	if t, ok := rv.Interface().(timeValuer); ok {
-		return t.Time()
+func normalizeLeafReflect(rv reflect.Value) (any, bool) {
+	if t, ok := extractTime(rv); ok {
+		return t, true
 	}
 	switch rv.Kind() {
 	case reflect.Bool:
-		return rv.Bool()
+		return rv.Bool(), true
 	case reflect.String:
-		return rv.String()
+		if rv.Type() == jsonNumberType {
+			return parseJSONNumberString(rv.String()), true
+		}
+		return rv.String(), true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return rv.Int()
+		return rv.Int(), true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		if u := rv.Uint(); u <= math.MaxInt64 {
-			return int64(u)
+			return int64(u), true
 		}
-		return float64(rv.Uint())
+		return float64(rv.Uint()), true
 	case reflect.Float32, reflect.Float64:
-		return rv.Float()
-	case reflect.Slice:
-		if rv.IsNil() {
-			return nil
+		return rv.Float(), true
+	case reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return rv.Interface(), true // identifier (ObjectID, UUID), not a list
 		}
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return rv.Interface(), true
+		}
+	case reflect.Struct:
+		if isRegexStruct(rv.Type()) {
+			return map[string]any{"$regex": rv.Field(0).String(), "$options": rv.Field(1).String()}, true
+		}
+	}
+	return nil, false
+}
+
+func reflectMapToAny(rv reflect.Value) map[string]any {
+	out := make(map[string]any, rv.Len())
+	for it := rv.MapRange(); it.Next(); {
+		out[it.Key().String()] = it.Value().Interface()
+	}
+	return out
+}
+
+func normalizeReflect(rv reflect.Value) any {
+	rv, ok := unwrapReflect(rv)
+	if !ok {
+		return nil
+	}
+	if v, handled := normalizeLeafReflect(rv); handled {
+		return v
+	}
+	switch rv.Kind() {
+	case reflect.Slice:
 		if isKeyValueStruct(rv.Type().Elem()) {
 			return orderedDocToMap(rv)
 		}
 		return sliceToAny(rv)
 	case reflect.Array:
-		if rv.Type().Elem().Kind() == reflect.Uint8 {
-			return rv.Interface() // identifier (ObjectID, UUID), not a list
-		}
 		return sliceToAny(rv)
 	case reflect.Map:
-		if rv.IsNil() {
-			return nil
-		}
-		if rv.Type().Key().Kind() != reflect.String {
-			return rv.Interface()
-		}
-		out := make(map[string]any, rv.Len())
-		for it := rv.MapRange(); it.Next(); {
-			out[it.Key().String()] = it.Value().Interface()
-		}
-		return out
+		return reflectMapToAny(rv)
 	case reflect.Struct:
-		if isRegexStruct(rv.Type()) {
-			return map[string]any{"$regex": rv.Field(0).String(), "$options": rv.Field(1).String()}
-		}
 		return structToMap(rv)
 	}
 	return rv.Interface()
@@ -359,7 +381,7 @@ func getStructInfo(t reflect.Type) *structInfo {
 		return cached.(*structInfo)
 	}
 	var fields []structField
-	collectStructFields(t, nil, map[string]bool{}, &fields)
+	collectStructFields(t, nil, map[string]bool{}, map[reflect.Type]bool{}, &fields)
 	byName := make(map[string]structField, len(fields))
 	var inlineMaps []structField
 	for i := range fields {
@@ -389,8 +411,15 @@ func getStructInfo(t reflect.Type) *structInfo {
 // mongory tag, bson tag, json tag, bare tag, or the exact Go field name (no
 // lowercasing). "-" tags also fall back to the exact Go field name. Only fields
 // tagged ",inline" are flattened; direct fields are added before inlined ones,
-// so a shallower field shadows a deeper one.
-func collectStructFields(t reflect.Type, prefix []int, seen map[string]bool, out *[]structField) {
+// so a shallower field shadows a deeper one. visiting guards recursive ",inline"
+// pointer types against stack overflow.
+func collectStructFields(t reflect.Type, prefix []int, seen map[string]bool, visiting map[reflect.Type]bool, out *[]structField) {
+	if visiting[t] {
+		return
+	}
+	visiting[t] = true
+	defer delete(visiting, t)
+
 	var inlined []reflect.StructField
 	for i := range t.NumField() {
 		sf := t.Field(i)
@@ -416,7 +445,7 @@ func collectStructFields(t reflect.Type, prefix []int, seen map[string]bool, out
 		*out = append(*out, structField{name: name, index: index})
 	}
 	for _, sf := range inlined {
-		collectStructFields(derefType(sf.Type), append(slices.Clone(prefix), sf.Index...), seen, out)
+		collectStructFields(derefType(sf.Type), append(slices.Clone(prefix), sf.Index...), seen, visiting, out)
 	}
 }
 
@@ -479,35 +508,215 @@ func hasInlineOption(opts string) bool {
 	return false
 }
 
-// convertCondition expands dotted keys into nested conditions (deep-merging
-// shared prefixes) and normalizes every value. Keys are visited in sorted
-// order so overlapping keys merge deterministically.
-func convertCondition(condition map[string]any) map[string]any {
+// cycleKey identifies an active container or pointer on the recursion stack so
+// cyclic references are rejected without false-positiving on shared DAGs or
+// overlapping non-cyclic subslices (distinguished by length n).
+type cycleKey struct {
+	kind reflect.Kind
+	typ  reflect.Type
+	ptr  uintptr
+	n    int
+}
+
+// convertRootCondition normalizes a top-level query condition document,
+// expands dotted keys, coerces typed nil slices passed to list operators into
+// empty []any, and rejects cyclic values with ErrInvalidCondition.
+func convertRootCondition(condition any) (map[string]any, error) {
+	if condition == nil {
+		return map[string]any{}, nil
+	}
+	if m, ok := condition.(map[string]any); ok {
+		if len(m) == 0 {
+			return map[string]any{}, nil
+		}
+		seen := map[cycleKey]bool{}
+		res, err := convertAny(m, false, seen)
+		if err != nil {
+			return nil, err
+		}
+		return res.(map[string]any), nil
+	}
+	seen := map[cycleKey]bool{}
+	norm, err := convertAny(condition, false, seen)
+	if err != nil {
+		return nil, err
+	}
+	switch c := norm.(type) {
+	case nil:
+		return map[string]any{}, nil
+	case map[string]any:
+		return c, nil
+	default:
+		return nil, invalidCondition("condition must be a document, got %T", condition)
+	}
+}
+
+// convertConditionWithSeen expands dotted keys into nested conditions
+// (deep-merging shared prefixes) and normalizes every value. Keys are visited
+// in sorted order so overlapping keys merge deterministically.
+func convertConditionWithSeen(condition map[string]any, seen map[cycleKey]bool) (map[string]any, error) {
 	out := make(map[string]any, len(condition))
 	for _, key := range sortedKeys(condition) {
-		deepMerge(out, expandKey(key, convertValue(condition[key])))
-	}
-	return out
-}
-
-func convertValue(v any) any {
-	switch x := normalize(v).(type) {
-	case map[string]any:
-		return convertCondition(x)
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = convertValue(e)
+		parts := splitKey(key)
+		listCtx := isListOperator(parts[len(parts)-1])
+		val, err := convertAny(condition[key], listCtx, seen)
+		if err != nil {
+			return nil, err
 		}
-		return out
-	default:
-		return x
+		deepMerge(out, expandParts(parts, val))
 	}
+	return out, nil
 }
 
-// expandKey turns "a.b\.c" into {"a": {"b.c": value}}.
-func expandKey(key string, value any) map[string]any {
-	parts := splitKey(key)
+func isListOperator(key string) bool {
+	switch key {
+	case "$in", "$nin", "$and", "$or":
+		return true
+	}
+	return false
+}
+
+func convertAny(v any, listCtx bool, seen map[cycleKey]bool) (any, error) {
+	if norm, ok := normalizeFast(v); ok {
+		switch x := norm.(type) {
+		case map[string]any:
+			if len(x) == 0 {
+				return map[string]any{}, nil
+			}
+			k := cycleKey{kind: reflect.Map, ptr: reflect.ValueOf(x).Pointer()}
+			if seen[k] {
+				return nil, invalidCondition("condition contains a cyclic reference")
+			}
+			seen[k] = true
+			out, err := convertConditionWithSeen(x, seen)
+			delete(seen, k)
+			return out, err
+		case []any:
+			if len(x) == 0 {
+				return make([]any, 0), nil
+			}
+			k := cycleKey{kind: reflect.Slice, ptr: reflect.ValueOf(x).Pointer(), n: len(x)}
+			if seen[k] {
+				return nil, invalidCondition("condition contains a cyclic reference")
+			}
+			seen[k] = true
+			out, err := convertSliceAny(x, seen)
+			delete(seen, k)
+			return out, err
+		default:
+			return x, nil
+		}
+	}
+	return convertReflect(reflect.ValueOf(v), listCtx, seen)
+}
+
+func convertSliceAny(x []any, seen map[cycleKey]bool) ([]any, error) {
+	out := make([]any, len(x))
+	for i, e := range x {
+		v, err := convertAny(e, false, seen)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func convertReflect(rv reflect.Value, listCtx bool, seen map[cycleKey]bool) (any, error) {
+	var pushedBuf [4]cycleKey
+	pushed := pushedBuf[:0]
+	defer func() {
+		for _, k := range pushed {
+			delete(seen, k)
+		}
+	}()
+
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() {
+			return nil, nil
+		}
+		if rv.Kind() == reflect.Pointer {
+			if rv.Type() == regexpType {
+				return rv.Interface(), nil
+			}
+			k := cycleKey{kind: reflect.Pointer, typ: rv.Type(), ptr: rv.Pointer()}
+			if seen[k] {
+				return nil, invalidCondition("condition contains a cyclic reference")
+			}
+			seen[k] = true
+			pushed = append(pushed, k)
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return nil, nil
+	}
+	if v, handled := normalizeLeafReflect(rv); handled {
+		return v, nil
+	}
+	switch rv.Kind() {
+	case reflect.Slice:
+		if rv.IsNil() {
+			// Typed nil slices passed to array operators ($in/$nin/$and/$or) behave
+			// identically to empty slices instead of failing with got <nil>.
+			if listCtx && !isKeyValueStruct(rv.Type().Elem()) {
+				return make([]any, 0), nil
+			}
+			return nil, nil
+		}
+		isKV := isKeyValueStruct(rv.Type().Elem())
+		if rv.Len() == 0 {
+			if isKV {
+				return map[string]any{}, nil
+			}
+			return make([]any, 0), nil
+		}
+		k := cycleKey{kind: reflect.Slice, ptr: rv.Pointer(), n: rv.Len()}
+		if seen[k] {
+			return nil, invalidCondition("condition contains a cyclic reference")
+		}
+		seen[k] = true
+		pushed = append(pushed, k)
+		if isKV {
+			return convertConditionWithSeen(orderedDocToMap(rv), seen)
+		}
+		return convertReflectSlice(rv, seen)
+	case reflect.Array:
+		return convertReflectSlice(rv, seen)
+	case reflect.Map:
+		if rv.IsNil() {
+			return nil, nil
+		}
+		if rv.Len() == 0 {
+			return map[string]any{}, nil
+		}
+		k := cycleKey{kind: reflect.Map, ptr: rv.Pointer()}
+		if seen[k] {
+			return nil, invalidCondition("condition contains a cyclic reference")
+		}
+		seen[k] = true
+		pushed = append(pushed, k)
+		return convertConditionWithSeen(reflectMapToAny(rv), seen)
+	case reflect.Struct:
+		return convertConditionWithSeen(structToMap(rv), seen)
+	}
+	return rv.Interface(), nil
+}
+
+func convertReflectSlice(rv reflect.Value, seen map[cycleKey]bool) ([]any, error) {
+	out := make([]any, rv.Len())
+	for i := range out {
+		v, err := convertAny(rv.Index(i).Interface(), false, seen)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+// expandParts turns ["a", "b.c"] into {"a": {"b.c": value}}.
+func expandParts(parts []string, value any) map[string]any {
 	result := map[string]any{parts[len(parts)-1]: value}
 	for i := len(parts) - 2; i >= 0; i-- {
 		result = map[string]any{parts[i]: result}

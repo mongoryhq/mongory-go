@@ -417,3 +417,267 @@ func TestMatcherConcurrentSafety(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTypedNilSlices(t *testing.T) {
+	type customIDs []int
+	type customAny []any
+	type inFilter struct {
+		In []string `mongory:"$in"`
+	}
+
+	var nilStrings []string
+	var nilCustom customIDs
+	var nilCustomAny customAny
+	var nilMaps []M
+	var nilSlicePtr *[]string
+	var nilBsonD bsonD
+
+	t.Run("typed nil slices act as empty in array operators", func(t *testing.T) {
+		inNil := mongory.MustCompile(M{"id": M{"$in": nilStrings}})
+		if inNil.Match(M{"id": "a"}) || inNil.Match(M{"id": nil}) || inNil.Match(M{}) {
+			t.Fatal("$in with typed nil slice should never match")
+		}
+
+		ninNil := mongory.MustCompile(M{"id": M{"$nin": nilStrings}})
+		if !ninNil.Match(M{"id": "a"}) || !ninNil.Match(M{"id": nil}) || !ninNil.Match(M{}) {
+			t.Fatal("$nin with typed nil slice should match existing documents")
+		}
+		if ninNil.Match(nil) {
+			t.Fatal("$nin on field should not match nil root record")
+		}
+
+		if m := mongory.MustCompile(M{"id": M{"$in": nilCustom}}); m.Match(M{"id": 1}) {
+			t.Fatal("custom typed nil slice in $in should never match")
+		}
+		if m := mongory.MustCompile(M{"id": M{"$in": nilCustomAny}}); m.Match(M{"id": 1}) {
+			t.Fatal("named []any nil slice in $in should never match")
+		}
+		if m := mongory.MustCompile(M{"id.$in": nilStrings}); m.Match(M{"id": "a"}) {
+			t.Fatal("dot-path $in with typed nil slice should never match")
+		}
+		if m := mongory.MustCompile(M{"id.$nin": nilStrings}); !m.Match(M{"id": "a"}) {
+			t.Fatal("dot-path $nin with typed nil slice should match")
+		}
+		if m := mongory.MustCompile(M{"id": inFilter{}}); m.Match(M{"id": "a"}) {
+			t.Fatal("struct tagged $in with nil slice field should never match")
+		}
+
+		andNil := mongory.MustCompile(M{"$and": nilMaps})
+		if !andNil.Match(M{"anything": 1}) || !andNil.Match("scalar") {
+			t.Fatal("empty $and from typed nil slice should match everything")
+		}
+		if m := mongory.MustCompile(M{"profile.$and": nilMaps}); !m.Match(M{"profile": M{}}) {
+			t.Fatal("dot-path $and from typed nil slice should match")
+		}
+
+		orNil := mongory.MustCompile(M{"$or": nilMaps})
+		if orNil.Match(M{"anything": 1}) || orNil.Match(M{}) {
+			t.Fatal("empty $or from typed nil slice should never match")
+		}
+		if m := mongory.MustCompile(M{"profile.$or": nilMaps}); m.Match(M{"profile": M{}}) {
+			t.Fatal("dot-path $or from typed nil slice should never match")
+		}
+	})
+
+	t.Run("untyped nil and non-array nil containers still fail validation", func(t *testing.T) {
+		invalid := []any{
+			M{"id": M{"$in": nil}},
+			M{"id": M{"$nin": nil}},
+			M{"$and": nil},
+			M{"$or": nil},
+			M{"id": M{"$in": nilSlicePtr}},
+			M{"id": M{"$in": nilBsonD}},
+			M{"$and": nilBsonD},
+		}
+		for _, cond := range invalid {
+			if _, err := mongory.Compile(cond); !errors.Is(err, mongory.ErrInvalidCondition) {
+				t.Errorf("Compile(%#v): err = %v, want ErrInvalidCondition", cond, err)
+			}
+		}
+	})
+
+	t.Run("typed nil slice outside list operators preserves nil semantics", func(t *testing.T) {
+		mNil := mongory.MustCompile(M{"tags": nilStrings})
+		if !mNil.Match(person{Tags: nil}) || !mNil.Match(M{"tags": nil}) || !mNil.Match(M{}) {
+			t.Fatal("typed nil slice field condition should match nil/missing field")
+		}
+		if mNil.Match(person{Tags: []string{}}) {
+			t.Fatal("typed nil slice field condition should not match non-nil empty slice")
+		}
+
+		zeroStruct := person{Name: "Alice"} // Tags is []string(nil)
+		if ok, err := mongory.Match(zeroStruct, zeroStruct); err != nil || !ok {
+			t.Fatalf("Match(zeroStruct, zeroStruct) = (%v, %v), want (true, nil)", ok, err)
+		}
+
+		mEmpty := mongory.MustCompile(M{"tags": []string{}})
+		if !mEmpty.Match(person{Tags: []string{}}) || mEmpty.Match(person{Tags: nil}) {
+			t.Fatal("non-nil empty typed slice should match empty slice only")
+		}
+	})
+}
+
+type cycleNode struct {
+	Name string
+	Next *cycleNode
+}
+
+type (
+	inlineCycleA struct {
+		A             int
+		*inlineCycleB `bson:",inline"`
+	}
+	inlineCycleB struct {
+		B             int
+		*inlineCycleA `bson:",inline"`
+	}
+	inlineMapNode struct {
+		ID    int
+		Extra map[string]any `bson:",inline"`
+	}
+	selfPtr *selfPtr
+)
+
+func TestCycleSafety(t *testing.T) {
+	t.Run("cyclic conditions return ErrInvalidCondition", func(t *testing.T) {
+		cycMap := M{}
+		cycMap["self"] = cycMap
+
+		type recMap map[string]recMap
+		cycTypedMap := recMap{}
+		cycTypedMap["self"] = cycTypedMap
+
+		type aliasMap map[string]any
+		cycAliasMap := M{}
+		cycAliasMap["self"] = aliasMap(cycAliasMap)
+
+		cycSlice := make([]any, 1)
+		cycSlice[0] = cycSlice
+
+		type recSlice []recSlice
+		cycTypedSlice := make(recSlice, 1)
+		cycTypedSlice[0] = cycTypedSlice
+
+		cycBsonD := bsonD{{"self", nil}}
+		cycBsonD[0].Value = cycBsonD
+
+		cycStruct := &cycleNode{Name: "a"}
+		cycStruct.Next = cycStruct
+
+		cycInlineMap := &inlineMapNode{ID: 1}
+		cycInlineMap.Extra = M{"self": cycInlineMap}
+
+		var cycPtr selfPtr
+		cycPtr = &cycPtr
+
+		var cycIface any
+		cycIface = &cycIface
+
+		cases := []struct {
+			name string
+			cond any
+		}{
+			{"map self", cycMap},
+			{"nested map cycle", M{"$and": A{M{"a": cycMap}}}},
+			{"typed map self", cycTypedMap},
+			{"aliased map self", cycAliasMap},
+			{"slice in $in", M{"id": M{"$in": cycSlice}}},
+			{"slice top-level", cycSlice},
+			{"typed slice", M{"tags": cycTypedSlice}},
+			{"bsonD self", cycBsonD},
+			{"struct pointer self", cycStruct},
+			{"struct value pointing to cycle", *cycStruct},
+			{"struct field nested", M{"node": cycStruct}},
+			{"inline map pointing to struct", cycInlineMap},
+			{"self-referential pointer type", M{"p": cycPtr}},
+			{"self-referential pointer root", cycPtr},
+			{"self-referential interface", M{"x": cycIface}},
+			{"self-referential interface root", cycIface},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := mongory.Compile(tc.cond); !errors.Is(err, mongory.ErrInvalidCondition) {
+					t.Errorf("Compile = %v, want ErrInvalidCondition", err)
+				}
+			})
+		}
+	})
+
+	t.Run("mutually recursive inline struct types do not overflow", func(t *testing.T) {
+		a := &inlineCycleA{A: 1}
+		b := &inlineCycleB{B: 2, inlineCycleA: a}
+		a.inlineCycleB = b
+
+		m, err := mongory.Compile(a)
+		if err != nil {
+			t.Fatalf("Compile(inlineCycleA): %v", err)
+		}
+		if !m.Match(a) || m.Match(&inlineCycleA{A: 9, inlineCycleB: b}) {
+			t.Fatal("Match on mutually recursive inline struct returned unexpected result")
+		}
+	})
+
+	t.Run("shared DAG and overlapping subslices are allowed", func(t *testing.T) {
+		shared := M{"status": "active"}
+		addr := &Address{City: "Taipei"}
+		buf := make([]any, 2)
+		buf[0] = "ok"
+		buf[1] = buf[:1]
+
+		m, err := mongory.Compile(M{
+			"$and": A{shared, shared},
+			"home": addr,
+			"work": addr,
+			"tags": buf,
+		})
+		if err != nil {
+			t.Fatalf("Compile shared DAG: %v", err)
+		}
+		rec := M{
+			"status": "active",
+			"home":   M{"city": "Taipei"},
+			"work":   M{"city": "Taipei"},
+			"tags":   A{"ok", A{"ok"}},
+		}
+		if !m.Match(rec) {
+			t.Fatal("shared DAG matcher failed to match")
+		}
+	})
+
+	t.Run("Match and Trace stay safe on cyclic records", func(t *testing.T) {
+		n := &cycleNode{Name: "a"}
+		n.Next = n
+
+		m := mongory.MustCompile(M{"Next.Next.Name": "a"})
+		if !m.Match(n) {
+			t.Fatal("Match on cyclic struct record should succeed for finite path")
+		}
+		if mongory.MustCompile(M{"$eq": M{"Name": "a"}}).Match(n) {
+			t.Fatal("whole-object $eq should return false when extra cyclic fields exist")
+		}
+
+		var cycPtr selfPtr
+		cycPtr = &cycPtr
+		var cycIface any
+		cycIface = &cycIface
+		eqM := mongory.MustCompile(M{"v": 1})
+		if eqM.Match(cycPtr) || eqM.Match(cycIface) || eqM.Match(M{"v": cycIface}) {
+			t.Fatal("cyclic pointer/interface record should safely evaluate to false")
+		}
+
+		cycMap := M{"name": "Ann"}
+		cycMap["self"] = cycMap
+		cycSlice := make([]any, 1)
+		cycSlice[0] = cycSlice
+		cycIntMap := map[int]any{}
+		cycIntMap[1] = cycIntMap
+
+		ok, trace := mongory.MustCompile(M{"name": "Ann", "tags": 1}).Trace(M{"name": "Ann", "self": cycMap, "tags": cycSlice, "meta": cycIntMap})
+		if ok || !strings.Contains(trace, "<cycle>") {
+			t.Fatalf("expected trace with <cycle>, got ok=%v:\n%s", ok, trace)
+		}
+		if _, trace2 := mongory.MustCompile(M{"meta": 1}).Trace(M{"meta": cycIntMap}); !strings.Contains(trace2, "<cycle>") {
+			t.Fatalf("expected trace with <cycle> for non-string cyclic map:\n%s", trace2)
+		}
+	})
+}

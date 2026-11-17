@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -102,6 +103,10 @@ func traceWrapped(record any, buf *strings.Builder, prefix string, isLast, isRoo
 }
 
 func formatValue(v any) string {
+	return formatValueSeen(v, nil)
+}
+
+func formatValueSeen(v any, seen map[cycleKey]bool) string {
 	switch x := v.(type) {
 	case missingKey:
 		return "<missing>"
@@ -114,48 +119,117 @@ func formatValue(v any) string {
 	case time.Time:
 		return x.Format(time.RFC3339Nano)
 	case []any:
-		var b strings.Builder
-		b.WriteByte('[')
-		limit := len(x)
-		if limit > 4 {
-			limit = 4
-		}
-		for i := 0; i < limit; i++ {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(formatValue(x[i]))
-		}
-		if len(x) > limit {
-			fmt.Fprintf(&b, ", ...(+%d)", len(x)-limit)
-		}
-		b.WriteByte(']')
-		return b.String()
+		return formatSliceElems(len(x), reflect.ValueOf(x).Pointer(), func(i int) any { return x[i] }, seen)
 	case map[string]any:
-		var b strings.Builder
-		b.WriteByte('{')
-		keys := sortedKeys(x)
-		limit := len(keys)
-		if limit > 4 {
-			limit = 4
-		}
-		for i := 0; i < limit; i++ {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(&b, "%s: %s", strconv.Quote(keys[i]), formatValue(x[keys[i]]))
-		}
-		if len(keys) > limit {
-			fmt.Fprintf(&b, ", ...(+%d)", len(keys)-limit)
-		}
-		b.WriteByte('}')
-		return b.String()
+		return formatStringMap(x, reflect.ValueOf(x).Pointer(), seen)
 	default:
-		if s, ok := x.(fmt.Stringer); ok {
-			return truncateString(s.String(), 64)
-		}
-		return truncateString(fmt.Sprintf("%v", x), 64)
+		return formatFallbackValue(x, seen)
 	}
+}
+
+func enterTraceCycle(seen map[cycleKey]bool, k cycleKey) (map[cycleKey]bool, bool) {
+	if seen[k] {
+		return seen, false
+	}
+	if seen == nil {
+		seen = map[cycleKey]bool{}
+	}
+	seen[k] = true
+	return seen, true
+}
+
+func formatSliceElems(n int, ptr uintptr, elem func(int) any, seen map[cycleKey]bool) string {
+	if n > 0 {
+		k := cycleKey{kind: reflect.Slice, ptr: ptr, n: n}
+		var ok bool
+		if seen, ok = enterTraceCycle(seen, k); !ok {
+			return "<cycle>"
+		}
+		defer delete(seen, k)
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	limit := min(n, 4)
+	for i := range limit {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(formatValueSeen(elem(i), seen))
+	}
+	if n > limit {
+		fmt.Fprintf(&b, ", ...(+%d)", n-limit)
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+func formatStringMap(m map[string]any, ptr uintptr, seen map[cycleKey]bool) string {
+	if len(m) > 0 {
+		k := cycleKey{kind: reflect.Map, ptr: ptr}
+		var ok bool
+		if seen, ok = enterTraceCycle(seen, k); !ok {
+			return "<cycle>"
+		}
+		defer delete(seen, k)
+	}
+	var b strings.Builder
+	b.WriteByte('{')
+	keys := sortedKeys(m)
+	limit := min(len(keys), 4)
+	for i := range limit {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%s: %s", strconv.Quote(keys[i]), formatValueSeen(m[keys[i]], seen))
+	}
+	if len(keys) > limit {
+		fmt.Fprintf(&b, ", ...(+%d)", len(keys)-limit)
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+func formatFallbackValue(x any, seen map[cycleKey]bool) string {
+	if s, ok := x.(fmt.Stringer); ok {
+		return truncateString(s.String(), 64)
+	}
+	rv := reflect.ValueOf(x)
+	if rv.IsValid() {
+		switch rv.Kind() {
+		case reflect.Slice:
+			return formatSliceElems(rv.Len(), rv.Pointer(), func(i int) any { return rv.Index(i).Interface() }, seen)
+		case reflect.Map:
+			if rv.IsNil() {
+				return "nil"
+			}
+			if rv.Type().Key().Kind() == reflect.String {
+				return formatStringMap(reflectMapToAny(rv), rv.Pointer(), seen)
+			}
+			if rv.Len() > 0 {
+				k := cycleKey{kind: reflect.Map, ptr: rv.Pointer()}
+				var ok bool
+				if seen, ok = enterTraceCycle(seen, k); !ok {
+					return "<cycle>"
+				}
+				defer delete(seen, k)
+			}
+			var b strings.Builder
+			b.WriteByte('{')
+			i := 0
+			for it := rv.MapRange(); it.Next() && i < 4; i++ {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%s: %s", formatValueSeen(it.Key().Interface(), seen), formatValueSeen(it.Value().Interface(), seen))
+			}
+			if rv.Len() > 4 {
+				fmt.Fprintf(&b, ", ...(+%d)", rv.Len()-4)
+			}
+			b.WriteByte('}')
+			return b.String()
+		}
+	}
+	return truncateString(fmt.Sprintf("%v", x), 64)
 }
 
 func truncateString(s string, max int) string {
