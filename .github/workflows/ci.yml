@@ -98,3 +98,91 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build ./...
+
+  coverage:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Enforce minimum statement coverage (85%)
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go test -coverpkg=github.com/mongoryhq/mongory-go,github.com/mongoryhq/mongory-go/internal/engine -coverprofile=coverage.out .
+          go tool cover -func=coverage.out
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
+          echo "Total coverage: ${total}%"
+          awk -v cov="$total" -v min=85.0 'BEGIN { if (cov + 0 < min) { printf "coverage %.1f%% < %.1f%%\n", cov, min > "/dev/stderr"; exit 1 } }'
+          rm -f coverage.out
+
+  fuzz:
+    name: Fuzz Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Run fuzz targets
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go test -run='^$' -fuzz='^FuzzCompile$' -fuzztime=5s .
+          go test -run='^$' -fuzz='^FuzzMatch$' -fuzztime=5s .
+          go test -run='^$' -fuzz='^FuzzStructMatch$' -fuzztime=5s .
+
+  benchmark:
+    name: Benchmark & Zero-Alloc Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Run benchmarks and enforce zero-alloc / O(1) $in gates
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -o pipefail
+          go test -run='^$' -bench='^BenchmarkMatch$' -benchmem -benchtime=200ms -count=3 . | tee bench.txt
+          cat bench.txt >> "$GITHUB_STEP_SUMMARY"
+          awk '
+            /^BenchmarkMatch\/.*\/(maps|structs_count)(-[0-9]+)?[ \t]/ {
+              seen_zero_check++
+              alloc = -1
+              nsrec = -1
+              for (i = 2; i <= NF; i++) {
+                if ($i == "allocs/op") alloc = $(i-1) + 0
+                if ($i == "ns/record") nsrec = $(i-1) + 0
+              }
+              if (alloc < 0 || alloc > 0) {
+                printf "expected 0 allocs/op on %s, got %d\n", $1, alloc > "/dev/stderr"
+                exit 1
+              }
+              if ($1 ~ /^BenchmarkMatch\/simple\/maps/) {
+                simple_sum += nsrec; simple_n++
+              }
+              if ($1 ~ /^BenchmarkMatch\/large_in\/maps/) {
+                large_sum += nsrec; large_n++
+              }
+            }
+            END {
+              if (seen_zero_check == 0 || simple_n == 0 || large_n == 0) {
+                print "missing expected BenchmarkMatch rows" > "/dev/stderr"
+                exit 1
+              }
+              simple_avg = simple_sum / simple_n
+              large_avg = large_sum / large_n
+              if (simple_avg > 0 && large_avg > simple_avg * 6.0) {
+                printf "large_in/maps regression: %.2f ns/record > 6x simple/maps (%.2f ns/record)\n", large_avg, simple_avg > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' bench.txt
+          rm -f bench.txt

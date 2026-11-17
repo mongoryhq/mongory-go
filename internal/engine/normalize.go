@@ -407,12 +407,13 @@ func getStructInfo(t reflect.Type) *structInfo {
 	return cached.(*structInfo)
 }
 
-// collectStructFields resolves exported struct fields only: key precedence is
-// mongory tag, bson tag, json tag, bare tag, or the exact Go field name (no
-// lowercasing). "-" tags also fall back to the exact Go field name. Only fields
-// tagged ",inline" are flattened; direct fields are added before inlined ones,
-// so a shallower field shadows a deeper one. visiting guards recursive ",inline"
-// pointer types against stack overflow.
+// collectStructFields resolves exported struct fields only (including exported
+// fields promoted through an unexported anonymous ",inline" struct): key
+// precedence is mongory tag, bson tag, json tag, bare tag, or the exact Go field
+// name (no lowercasing). "-" tags also fall back to the exact Go field name.
+// Only fields tagged ",inline" are flattened; direct fields are added before
+// inlined ones, so a shallower field shadows a deeper one. visiting guards
+// recursive ",inline" pointer types against stack overflow.
 func collectStructFields(t reflect.Type, prefix []int, seen map[string]bool, visiting map[reflect.Type]bool, out *[]structField) {
 	if visiting[t] {
 		return
@@ -424,6 +425,11 @@ func collectStructFields(t reflect.Type, prefix []int, seen map[string]bool, vis
 	for i := range t.NumField() {
 		sf := t.Field(i)
 		if !sf.IsExported() {
+			if sf.Anonymous && derefType(sf.Type).Kind() == reflect.Struct {
+				if _, inline := structFieldKey(sf); inline {
+					inlined = append(inlined, sf)
+				}
+			}
 			continue
 		}
 		name, inline := structFieldKey(sf)

@@ -176,6 +176,8 @@ func TestMatcherMatch(t *testing.T) {
 		{"struct bson empty name falls back to json", M{"from_json": "bj", "BsonEmpty": nil}, alice, true},
 		{"struct mongory dash falls back to field name", M{"MongoryDash": "md"}, alice, true},
 		{"struct unexported skipped", M{"hidden": nil}, alice, true},
+		{"struct unexported embedded inline promotes exported fields", M{"code": "C1", "hidden": nil}, fuzzRecord{fuzzInline: &fuzzInline{Code: "C1"}}, true},
+		{"struct unexported embedded without inline stays hidden", M{"Code": nil}, struct{ *fuzzInline }{&fuzzInline{Code: "C1"}}, true},
 		{"struct inline map", M{"plan": "pro"}, alice, true},
 		{"struct inline map never overrides fields", M{"full_name": "Alice"}, alice, true},
 		{"struct nil inline pointer", M{"_id": nil, "Role": "admin"}, wrapper{Role: "admin"}, true},
@@ -359,6 +361,30 @@ func TestExplainAndTrace(t *testing.T) {
 	}
 	if !strings.Contains(trace, "[PASS] Or") || !strings.Contains(trace, "[PASS] [1]") {
 		t.Fatalf("expected ElemMatch element trace:\n%s", trace)
+	}
+
+	fullM := mongory.MustCompile(M{
+		"$and": A{
+			M{"role": M{"$ne": "guest", "$not": "banned"}},
+			M{"scores": M{"$every": M{"$gte": 1}, "$size": 2}},
+			M{"tags": M{"$in": A{"go"}, "$nin": A{"bad"}}},
+			M{"nick": M{"$exists": true, "$present": true}},
+		},
+	})
+	fullExplain := fullM.Explain()
+	for _, want := range []string{"Ne(", "Not", "Every", "Size", "In(", "Nin(", "Exists(true)", "Present(true)"} {
+		if !strings.Contains(fullExplain, want) {
+			t.Fatalf("fullExplain missing %q:\n%s", want, fullExplain)
+		}
+	}
+	if ok, tr := fullM.Trace(M{"role": "user", "scores": A{2, 3}, "tags": A{"go"}, "nick": "al"}); !ok || tr == "" {
+		t.Fatalf("fullM Trace failed: ok=%v\n%s", ok, tr)
+	}
+	if s := mongory.MustCompile(M{}).Explain(); !strings.Contains(s, "And (empty)") {
+		t.Fatalf("empty condition Explain = %q", s)
+	}
+	if s := mongory.MustCompile(M{"$or": A{}}).Explain(); !strings.Contains(s, "Or (empty)") {
+		t.Fatalf("empty $or Explain = %q", s)
 	}
 }
 
