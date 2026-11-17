@@ -25,9 +25,9 @@ import (
 
 type User struct {
 	Name   string   `bson:"name"`
-	Age    int      `bson:"age"`
+	Age    int      `json:"age"`
 	Tags   []string `bson:"tags"`
-	Active bool     // no tag: key defaults to "active"
+	Active bool     // no tag: key is "Active" (exact Go field name)
 }
 
 var adults = mongory.MustCompile(mongory.M{"age": mongory.M{"$gte": 18}})
@@ -40,7 +40,7 @@ func main() {
 	}
 
 	m, err := mongory.Compile(mongory.M{
-		"active": true,
+		"Active": true,
 		"$or": mongory.A{
 			mongory.M{"tags": "go"},
 			mongory.M{"age": mongory.M{"$lt": 18}},
@@ -86,7 +86,8 @@ Example `Trace` output:
 ## Semantics & Data Shapes
 
 - **Conditions** accept any document shape: `mongory.M`, `map[string]any`, `bson.M`, `bson.D`, a struct, or `nil` (matches everything). Dot paths (`"address.city"`), escaped dots (`"a\\.b"`), array indexes (`"tags.0"`, `"tags.-1"`), and MongoDB implicit array matching apply.
-- **Records** may be maps, `bson.M`/`bson.D`, structs or struct pointers, slices, or scalars. Struct fields resolve via `mongory` tag, `bson` tag, or `json` tag, falling back to the exact Go field name (including `"-"` tags); only `,inline` fields are flattened. `ObjectID` (`[N]byte`) and `DateTime` (`Time() time.Time`) shapes are supported without importing a BSON driver.
+- **Records** may be maps, `bson.M`/`bson.D`, structs or struct pointers, slices, or scalars. `ObjectID` (`[N]byte`) and `DateTime` (`Time() time.Time`) shapes are supported without importing a BSON driver.
+- **Struct field keys** resolve tags in priority order (`mongory` → `bson` → `json` → bare tag without `key:`), using the first explicit name found and falling back to the exact Go field name (no lowercasing). Empty tag names (such as `",omitempty"`) and `"-"` tags yield no name and continue to the next tag or the Go field name (`json:"-,"` preserves literal `"-"`). Only `,inline` struct/map fields are flattened.
 - **Operators**: `$eq $ne $gt $gte $lt $lte $in $nin $exists $present $and $or $not $elemMatch $every $size $regex` (with `$options`: `i`, `m`, `s`). Unknown `$` operators are rejected by `Compile`.
 
 ## Conformance & Benchmarks
