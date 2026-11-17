@@ -58,12 +58,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-      - name: Build (CGO disabled)
+      - name: Build
         shell: bash
-        run: CGO_ENABLED=0 go build ./...
-      - name: Test (CGO disabled)
+        run: go build ./...
+      - name: Test
         shell: bash
-        run: CGO_ENABLED=0 go test -v ./...
+        run: go test -v ./...
       - name: Race Detector Tests
         if: runner.os != 'Windows'
         run: go test -race ./...
@@ -94,7 +94,6 @@ jobs:
           go-version: '1.26'
       - name: Build target
         env:
-          CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build ./...
@@ -109,8 +108,6 @@ jobs:
           go-version: '1.26'
       - name: Enforce minimum statement coverage (85%)
         shell: bash
-        env:
-          CGO_ENABLED: '0'
         run: |
           go test -coverpkg=github.com/mongoryhq/mongory-go,github.com/mongoryhq/mongory-go/internal/engine -coverprofile=coverage.out .
           go tool cover -func=coverage.out
@@ -129,8 +126,6 @@ jobs:
           go-version: '1.26'
       - name: Run fuzz targets
         shell: bash
-        env:
-          CGO_ENABLED: '0'
         run: |
           go test -run='^$' -fuzz='^FuzzCompile$' -fuzztime=5s .
           go test -run='^$' -fuzz='^FuzzMatch$' -fuzztime=5s .
@@ -146,8 +141,6 @@ jobs:
           go-version: '1.26'
       - name: Run benchmarks and enforce zero-alloc / O(1) $in gates
         shell: bash
-        env:
-          CGO_ENABLED: '0'
         run: |
           set -o pipefail
           go test -run='^$' -bench='^BenchmarkMatch$' -benchmem -benchtime=200ms -count=3 . | tee bench.txt

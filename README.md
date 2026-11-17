@@ -8,7 +8,7 @@ Zero-dependency, pure Go MongoDB-style query matcher for in-memory Go data: comp
 go get github.com/mongoryhq/mongory-go
 ```
 
-Requires Go 1.22 or later (`CGO_ENABLED=0` compatible).
+Requires Go 1.22 or later (pure Go, zero external dependencies).
 
 ## Usage
 
@@ -95,7 +95,7 @@ Example `Trace` output:
 Behavior is verified against the cross-language [mongory-spec](https://github.com/mongoryhq/mongory-spec) fixtures:
 
 ```bash
-MONGORY_SPEC_DIR=../mongory-spec CGO_ENABLED=0 go test -v ./...
+MONGORY_SPEC_DIR=../mongory-spec go test -v ./...
 go test -run '^$' -bench . -benchmem
 ```
 

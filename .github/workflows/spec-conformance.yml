@@ -50,7 +50,6 @@ jobs:
       - name: Run conformance tests
         shell: bash
         env:
-          CGO_ENABLED: '0'
           MONGORY_SPEC_DIR: ${{ github.workspace }}/mongory-spec
         run: |
           set -o pipefail
