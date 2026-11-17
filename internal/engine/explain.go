@@ -53,8 +53,8 @@ func statusLabel(matched bool) string {
 }
 
 func traceLeaf(m matcher, record any, buf *strings.Builder, prefix string, isLast, isRoot bool, label string) bool {
-	matched := m.match(record)
-	line := fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), label, formatValue(record))
+	matched := matchRaw(m, record)
+	line := fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), label, formatTraceValue(record))
 	writeTreeLine(buf, prefix, isLast, isRoot, line)
 	return matched
 }
@@ -69,7 +69,7 @@ func explainBranch(buf *strings.Builder, prefix string, isLast, isRoot bool, lab
 func traceGroup(record any, buf *strings.Builder, prefix string, isLast, isRoot bool, op string, children []matcher, stopOn bool) bool {
 	if len(children) == 0 {
 		matched := !stopOn // empty And matches (stopOn=false -> true); empty Or never matches (stopOn=true -> false)
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s (empty) | value=%s", statusLabel(matched), op, formatValue(record)))
+		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s (empty) | value=%s", statusLabel(matched), op, formatTraceValue(record)))
 		return matched
 	}
 	childPrefix := childPrefixFor(prefix, isLast, isRoot)
@@ -85,7 +85,7 @@ func traceGroup(record any, buf *strings.Builder, prefix string, isLast, isRoot 
 			break
 		}
 	}
-	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), op, formatValue(record)))
+	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), op, formatTraceValue(record)))
 	buf.WriteString(childBuf.String())
 	return matched
 }
@@ -97,9 +97,41 @@ func traceWrapped(record any, buf *strings.Builder, prefix string, isLast, isRoo
 	if invert {
 		matched = !matched
 	}
-	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), label, formatValue(record)))
+	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), label, formatTraceValue(record)))
 	buf.WriteString(childBuf.String())
 	return matched
+}
+
+func safeStringer(v any) (string, bool) {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return "nil", true
+	}
+	if rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return "nil", true
+	}
+	if s, ok := v.(fmt.Stringer); ok {
+		return truncateString(s.String(), 64), true
+	}
+	return "", false
+}
+
+func formatTraceValue(v any) string {
+	switch x := v.(type) {
+	case missingKey:
+		return "<missing>"
+	case nil:
+		return "nil"
+	case string, bool, int, int64, float64, time.Time, []any, map[string]any:
+		return formatValueSeen(x, nil)
+	}
+	if s, ok := safeStringer(v); ok {
+		return s
+	}
+	if norm, ok := normalizeFast(v); ok {
+		return formatValueSeen(norm, nil)
+	}
+	return formatValueSeen(normalize(v), nil)
 }
 
 func formatValue(v any) string {
@@ -190,8 +222,8 @@ func formatStringMap(m map[string]any, ptr uintptr, seen map[cycleKey]bool) stri
 }
 
 func formatFallbackValue(x any, seen map[cycleKey]bool) string {
-	if s, ok := x.(fmt.Stringer); ok {
-		return truncateString(s.String(), 64)
+	if s, ok := safeStringer(x); ok {
+		return s
 	}
 	rv := reflect.ValueOf(x)
 	if rv.IsValid() {

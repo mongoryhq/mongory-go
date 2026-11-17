@@ -22,27 +22,6 @@ const (
 	DefaultMaxNodes = 4096
 )
 
-// CompileConfig controls compile-time resource limits.
-type CompileConfig struct {
-	MaxDepth int
-	MaxNodes int
-}
-
-// Option configures Compile behavior.
-type Option func(*CompileConfig)
-
-// WithMaxDepth overrides DefaultMaxDepth (64). A non-positive value disables
-// the depth limit.
-func WithMaxDepth(depth int) Option {
-	return func(c *CompileConfig) { c.MaxDepth = depth }
-}
-
-// WithMaxNodes overrides DefaultMaxNodes (4096). A non-positive value disables
-// the node limit.
-func WithMaxNodes(nodes int) Option {
-	return func(c *CompileConfig) { c.MaxNodes = nodes }
-}
-
 // Tree is a compiled condition. It is safe for concurrent use.
 type Tree struct {
 	root matcher
@@ -57,10 +36,13 @@ func Compile(condition any, opts ...Option) (*Tree, error) {
 	}
 	for _, opt := range opts {
 		if opt != nil {
-			opt(&cfg)
+			opt.apply(&cfg)
 		}
 	}
-	doc, err := convertRootCondition(condition, cfg.MaxDepth)
+	if err := cfg.validateError(); err != nil {
+		return nil, err
+	}
+	doc, err := convertRootCondition(condition, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +69,6 @@ func (t *Tree) Explain() string {
 // result and a per-node execution trace.
 func (t *Tree) Trace(record any) (bool, string) {
 	var buf strings.Builder
-	matched := t.root.trace(normalize(record), &buf, "", true, true)
+	matched := t.root.trace(record, &buf, "", true, true)
 	return matched, buf.String()
 }

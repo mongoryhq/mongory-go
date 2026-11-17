@@ -62,6 +62,40 @@ func Filter[S ~[]E, E any](records S, m *Matcher) S {
 	return out
 }
 
+// FilterLimit returns up to limit records in records that match m, preserving
+// order and stopping early once limit matches are found. A negative limit does
+// not bound results (identical to [Filter]); limit == 0 returns nil. Returns
+// nil when nothing matches.
+func FilterLimit[S ~[]E, E any](records S, m *Matcher, limit int) S {
+	if limit == 0 {
+		return nil
+	}
+	if limit < 0 {
+		return Filter(records, m)
+	}
+	var out S
+	if isStructElem[E]() {
+		for i := range records {
+			if m.Match(&records[i]) {
+				out = append(out, records[i])
+				if len(out) == limit {
+					return out
+				}
+			}
+		}
+		return out
+	}
+	for _, r := range records {
+		if m.Match(r) {
+			out = append(out, r)
+			if len(out) == limit {
+				return out
+			}
+		}
+	}
+	return out
+}
+
 // Find returns the first record in records that matches m and reports whether
 // one was found.
 func Find[S ~[]E, E any](records S, m *Matcher) (E, bool) {

@@ -31,12 +31,22 @@ func buildRegex(ctx *compileCtx, condition, options any) (matcher, error) {
 		}
 		flags = s
 	}
+	wrap := func(re *regexp.Regexp) (matcher, error) {
+		m, err := addNodeMatcher(ctx, regexMatcher{re: re})
+		if err != nil {
+			return nil, err
+		}
+		if conv := ctx.convOrNil(); conv != nil {
+			return convValueMatcher{conv: conv, inner: m}, nil
+		}
+		return m, nil
+	}
 	switch c := condition.(type) {
 	case *regexp.Regexp:
 		if flags != "" {
 			return nil, invalidCondition("$options cannot modify a compiled *regexp.Regexp")
 		}
-		return addNodeMatcher(ctx, regexMatcher{re: c})
+		return wrap(c)
 	case string:
 		pattern := c
 		if flags != "" {
@@ -46,7 +56,7 @@ func buildRegex(ctx *compileCtx, condition, options any) (matcher, error) {
 		if err != nil {
 			return nil, invalidCondition("$regex: %v", err)
 		}
-		return addNodeMatcher(ctx, regexMatcher{re: re})
+		return wrap(re)
 	}
 	return nil, invalidCondition("$regex needs a string or *regexp.Regexp, got %T", condition)
 }

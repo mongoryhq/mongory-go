@@ -129,3 +129,20 @@ func countMatches[T any](m *mongory.Matcher, records []T) int {
 func reportPerRecord(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/benchSize, "ns/record")
 }
+
+func BenchmarkOptionsFastPath(b *testing.B) {
+	_, users := benchData()
+	emptyPreset := mongory.WithOptions()
+	m := mongory.MustCompile(M{"profile.city": "Taipei", "status": "active", "age": M{"$lt": 40}}, emptyPreset)
+	b.Run("empty_preset/structs_count", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = mongory.Count(users, m)
+		}
+		reportPerRecord(b)
+	})
+	b.Run("structs_filter_limit_10", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = mongory.FilterLimit(users, m, 10)
+		}
+	})
+}

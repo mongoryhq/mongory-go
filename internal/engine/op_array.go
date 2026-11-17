@@ -16,6 +16,7 @@ func init() {
 // condition.
 type elemMatchMatcher struct {
 	inner matcher
+	raw   bool
 }
 
 func buildElemMatch(ctx *compileCtx, condition any) (matcher, error) {
@@ -23,13 +24,21 @@ func buildElemMatch(ctx *compileCtx, condition any) (matcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return elemMatchMatcher{inner: inner}, nil
+	return elemMatchMatcher{inner: inner, raw: containsCustomOp(inner)}, nil
 }
 
-func matchListElementsAny(record any, inner matcher, stopOn bool) bool {
+func matchListElementsAny(record any, inner matcher, raw, stopOn bool) bool {
 	arr, ok := record.([]any)
 	if !ok || len(arr) == 0 {
 		return false
+	}
+	if raw {
+		for _, e := range arr {
+			if evalMatcherOnRaw(inner, e) == stopOn {
+				return stopOn
+			}
+		}
+		return !stopOn
 	}
 	for _, e := range arr {
 		if matchRaw(inner, e) == stopOn {
@@ -39,10 +48,18 @@ func matchListElementsAny(record any, inner matcher, stopOn bool) bool {
 	return !stopOn
 }
 
-func matchListElementsReflect(rv reflect.Value, inner matcher, stopOn bool) bool {
+func matchListElementsReflect(rv reflect.Value, inner matcher, raw, stopOn bool) bool {
 	list, ok := unwrapReflect(rv)
 	if !ok || !isReflectList(list) || list.Len() == 0 {
 		return false
+	}
+	if raw {
+		for i := range list.Len() {
+			if matchReflectValueRaw(inner, list.Index(i), true) == stopOn {
+				return stopOn
+			}
+		}
+		return !stopOn
 	}
 	for i := range list.Len() {
 		if matchReflectValue(inner, list.Index(i)) == stopOn {
@@ -53,11 +70,11 @@ func matchListElementsReflect(rv reflect.Value, inner matcher, stopOn bool) bool
 }
 
 func (m elemMatchMatcher) match(record any) bool {
-	return matchListElementsAny(record, m.inner, true)
+	return matchListElementsAny(record, m.inner, m.raw, true)
 }
 
 func (m elemMatchMatcher) matchReflect(rv reflect.Value) bool {
-	return matchListElementsReflect(rv, m.inner, true)
+	return matchListElementsReflect(rv, m.inner, m.raw, true)
 }
 
 func (m elemMatchMatcher) priority() int { return 3 + m.inner.priority() }
@@ -72,6 +89,7 @@ func (m elemMatchMatcher) trace(record any, buf *strings.Builder, prefix string,
 // condition.
 type everyMatcher struct {
 	inner matcher
+	raw   bool
 }
 
 func buildEvery(ctx *compileCtx, condition any) (matcher, error) {
@@ -79,15 +97,15 @@ func buildEvery(ctx *compileCtx, condition any) (matcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return everyMatcher{inner: inner}, nil
+	return everyMatcher{inner: inner, raw: containsCustomOp(inner)}, nil
 }
 
 func (m everyMatcher) match(record any) bool {
-	return matchListElementsAny(record, m.inner, false)
+	return matchListElementsAny(record, m.inner, m.raw, false)
 }
 
 func (m everyMatcher) matchReflect(rv reflect.Value) bool {
-	return matchListElementsReflect(rv, m.inner, false)
+	return matchListElementsReflect(rv, m.inner, m.raw, false)
 }
 
 func (m everyMatcher) priority() int { return 3 + m.inner.priority() }
@@ -98,22 +116,39 @@ func (m everyMatcher) trace(record any, buf *strings.Builder, prefix string, isL
 	return traceArrayElements(record, buf, prefix, isLast, isRoot, "Every", m.inner, false)
 }
 
+func extractTraceList(record any) ([]any, bool) {
+	if arr, ok := record.([]any); ok {
+		return arr, true
+	}
+	if record == nil {
+		return nil, false
+	}
+	list, ok := unwrapReflect(reflect.ValueOf(record))
+	if !ok || !isReflectList(list) {
+		return nil, false
+	}
+	out := make([]any, list.Len())
+	for i := range list.Len() {
+		out[i] = list.Index(i).Interface()
+	}
+	return out, true
+}
+
 func traceArrayElements(record any, buf *strings.Builder, prefix string, isLast, isRoot bool, op string, inner matcher, stopOn bool) bool {
-	arr, ok := record.([]any)
+	arr, ok := extractTraceList(record)
 	if !ok || len(arr) == 0 {
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] %s | value=%s", op, formatValue(record)))
+		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] %s | value=%s", op, formatTraceValue(record)))
 		return false
 	}
 	childPrefix := childPrefixFor(prefix, isLast, isRoot)
 	var childBuf strings.Builder
 	matched := !stopOn
 	for i, e := range arr {
-		elemVal := normalize(e)
 		elemLast := i == len(arr)-1
 		elemChildPrefix := childPrefixFor(childPrefix, elemLast, false)
 		var elemBuf strings.Builder
-		res := inner.trace(elemVal, &elemBuf, elemChildPrefix, true, false)
-		writeTreeLine(&childBuf, childPrefix, elemLast, false, fmt.Sprintf("[%s] [%d] | value=%s", statusLabel(res), i, formatValue(elemVal)))
+		res := inner.trace(e, &elemBuf, elemChildPrefix, true, false)
+		writeTreeLine(&childBuf, childPrefix, elemLast, false, fmt.Sprintf("[%s] [%d] | value=%s", statusLabel(res), i, formatTraceValue(e)))
 		childBuf.WriteString(elemBuf.String())
 		if res == stopOn {
 			matched = stopOn
@@ -123,7 +158,7 @@ func traceArrayElements(record any, buf *strings.Builder, prefix string, isLast,
 			break
 		}
 	}
-	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), op, formatValue(record)))
+	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), op, formatTraceValue(record)))
 	buf.WriteString(childBuf.String())
 	return matched
 }
@@ -142,7 +177,7 @@ func buildElementCondition(ctx *compileCtx, operator string, condition any) (mat
 // sizeMatcher matches an array whose length satisfies a literal condition,
 // so both {"$size": 3} and {"$size": {"$gte": 1}} work.
 type sizeMatcher struct {
-	inner *literalMatcher
+	inner matcher
 }
 
 func buildSize(ctx *compileCtx, condition any) (matcher, error) {
@@ -171,9 +206,9 @@ func (m sizeMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot
 	explainBranch(buf, prefix, isLast, isRoot, "Size", m.inner)
 }
 func (m sizeMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	arr, ok := record.([]any)
+	arr, ok := extractTraceList(record)
 	if !ok {
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Size | value=%s", formatValue(record)))
+		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Size | value=%s", formatTraceValue(record)))
 		return false
 	}
 	return traceWrapped(int64(len(arr)), buf, prefix, isLast, isRoot, fmt.Sprintf("Size(len=%d)", len(arr)), m.inner, false)

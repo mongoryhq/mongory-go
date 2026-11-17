@@ -36,7 +36,11 @@ func buildIn(ctx *compileCtx, operator string, condition any, negate bool) (matc
 	if len(items) >= inSetThreshold {
 		set = buildInLookup(items)
 	}
-	return inMatcher{items: items, set: set, negate: negate}, nil
+	m := inMatcher{items: items, set: set, negate: negate}
+	if conv := ctx.convOrNil(); conv != nil {
+		return inConvMatcher{in: m, conv: conv}, nil
+	}
+	return m, nil
 }
 
 func (m inMatcher) match(record any) bool {

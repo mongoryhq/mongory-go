@@ -130,6 +130,7 @@ jobs:
           go test -run='^$' -fuzz='^FuzzCompile$' -fuzztime=5s .
           go test -run='^$' -fuzz='^FuzzMatch$' -fuzztime=5s .
           go test -run='^$' -fuzz='^FuzzStructMatch$' -fuzztime=5s .
+          go test -run='^$' -fuzz='^FuzzExtensions$' -fuzztime=5s .
 
   benchmark:
     name: Benchmark & Zero-Alloc Gate

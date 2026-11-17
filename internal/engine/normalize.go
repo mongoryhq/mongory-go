@@ -524,27 +524,39 @@ type cycleKey struct {
 	n    int
 }
 
+type normOpts struct {
+	maxDepth  int
+	conv      *converterRegistry
+	customOps map[string]Operator
+}
+
 // convertRootCondition normalizes a top-level query condition document,
-// expands dotted keys, coerces typed nil slices passed to list operators into
-// empty []any, enforces maxDepth, and rejects cyclic values with
-// ErrInvalidCondition.
-func convertRootCondition(condition any, maxDepth int) (map[string]any, error) {
+// expands dotted keys (turning leaf collisions into $and clauses), coerces
+// typed nil slices passed to list operators into empty []any, runs registered
+// converters on built-in arguments while preserving raw custom-op arguments,
+// enforces maxDepth, and rejects cyclic values with ErrInvalidCondition.
+func convertRootCondition(condition any, cfg CompileConfig) (map[string]any, error) {
 	if condition == nil {
 		return map[string]any{}, nil
+	}
+	opts := normOpts{
+		maxDepth:  cfg.MaxDepth,
+		conv:      cfg.converters,
+		customOps: cfg.operators,
 	}
 	if m, ok := condition.(map[string]any); ok {
 		if len(m) == 0 {
 			return map[string]any{}, nil
 		}
 		seen := map[cycleKey]bool{}
-		res, err := convertAny(m, false, 0, maxDepth, seen)
+		res, err := convertConditionWithSeen(m, 0, opts, seen)
 		if err != nil {
 			return nil, err
 		}
-		return res.(map[string]any), nil
+		return res, nil
 	}
 	seen := map[cycleKey]bool{}
-	norm, err := convertAny(condition, false, 0, maxDepth, seen)
+	norm, err := convertAny(condition, false, 0, opts, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -566,22 +578,41 @@ func checkDepthLimit(depth, maxDepth int) error {
 }
 
 // convertConditionWithSeen expands dotted keys into nested conditions
-// (deep-merging shared prefixes) and normalizes every value. Keys are visited
-// in sorted order so overlapping keys merge deterministically.
-func convertConditionWithSeen(condition map[string]any, depth, maxDepth int, seen map[cycleKey]bool) (map[string]any, error) {
+// (preserving leaf collisions inside "$and") and normalizes every value. Keys
+// are visited in sorted order so overlapping keys merge deterministically.
+func convertConditionWithSeen(condition map[string]any, depth int, opts normOpts, seen map[cycleKey]bool) (map[string]any, error) {
 	out := make(map[string]any, len(condition))
+	var conflicts []any
 	for _, key := range sortedKeys(condition) {
 		parts := splitKey(key)
 		nextDepth := depth + len(parts)
-		if err := checkDepthLimit(nextDepth, maxDepth); err != nil {
+		if err := checkDepthLimit(nextDepth, opts.maxDepth); err != nil {
 			return nil, err
 		}
-		listCtx := isListOperator(parts[len(parts)-1])
-		val, err := convertAny(condition[key], listCtx, nextDepth, maxDepth, seen)
-		if err != nil {
-			return nil, err
+		lastKey := parts[len(parts)-1]
+		var val any
+		if _, isCustom := opts.customOps[lastKey]; isCustom {
+			val = condition[key]
+		} else {
+			listCtx := isListOperator(lastKey)
+			var err error
+			val, err = convertAny(condition[key], listCtx, nextDepth, opts, seen)
+			if err != nil {
+				return nil, err
+			}
 		}
-		deepMerge(out, expandParts(parts, val))
+		if res := mergeExpandedNode(out, expandParts(parts, val)); len(res) > 0 {
+			conflicts = append(conflicts, res)
+		}
+	}
+	if len(conflicts) > 0 {
+		if existing, ok := out["$and"]; ok {
+			if arr, isArr := existing.([]any); isArr {
+				out["$and"] = append(arr, conflicts...)
+			}
+		} else {
+			out["$and"] = conflicts
+		}
 	}
 	return out, nil
 }
@@ -594,7 +625,14 @@ func isListOperator(key string) bool {
 	return false
 }
 
-func convertAny(v any, listCtx bool, depth, maxDepth int, seen map[cycleKey]bool) (any, error) {
+func convertAny(v any, listCtx bool, depth int, opts normOpts, seen map[cycleKey]bool) (any, error) {
+	if opts.conv != nil && v != nil {
+		if entry, ok := opts.conv.lookupConcrete(reflect.TypeOf(v)); ok && reflect.TypeOf(v).Kind() != reflect.Pointer {
+			noConv := opts
+			noConv.conv = nil
+			return convertAny(entry.convertAny(v), listCtx, depth, noConv, seen)
+		}
+	}
 	if norm, ok := normalizeFast(v); ok {
 		switch x := norm.(type) {
 		case map[string]any:
@@ -606,7 +644,7 @@ func convertAny(v any, listCtx bool, depth, maxDepth int, seen map[cycleKey]bool
 				return nil, invalidCondition("condition contains a cyclic reference")
 			}
 			seen[k] = true
-			out, err := convertConditionWithSeen(x, depth, maxDepth, seen)
+			out, err := convertConditionWithSeen(x, depth, opts, seen)
 			delete(seen, k)
 			return out, err
 		case []any:
@@ -618,20 +656,20 @@ func convertAny(v any, listCtx bool, depth, maxDepth int, seen map[cycleKey]bool
 				return nil, invalidCondition("condition contains a cyclic reference")
 			}
 			seen[k] = true
-			out, err := convertSliceAny(x, depth, maxDepth, seen)
+			out, err := convertSliceAny(x, depth, opts, seen)
 			delete(seen, k)
 			return out, err
 		default:
 			return x, nil
 		}
 	}
-	return convertReflect(reflect.ValueOf(v), listCtx, depth, maxDepth, seen)
+	return convertReflect(reflect.ValueOf(v), listCtx, depth, opts, seen)
 }
 
-func convertSliceAny(x []any, depth, maxDepth int, seen map[cycleKey]bool) ([]any, error) {
+func convertSliceAny(x []any, depth int, opts normOpts, seen map[cycleKey]bool) ([]any, error) {
 	out := make([]any, len(x))
 	for i, e := range x {
-		v, err := convertListElem(e, depth, maxDepth, seen)
+		v, err := convertListElem(e, depth, opts, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -640,17 +678,17 @@ func convertSliceAny(x []any, depth, maxDepth int, seen map[cycleKey]bool) ([]an
 	return out, nil
 }
 
-func convertListElem(e any, depth, maxDepth int, seen map[cycleKey]bool) (any, error) {
+func convertListElem(e any, depth int, opts normOpts, seen map[cycleKey]bool) (any, error) {
 	// Direct list elements inherit depth since the enclosing key already counted +1;
 	// deeper nested arrays/containers increment on entry so [[...]] bombs fail cleanly.
 	nextDepth := depth
 	if isNestedListElem(e) {
 		nextDepth++
-		if err := checkDepthLimit(nextDepth, maxDepth); err != nil {
+		if err := checkDepthLimit(nextDepth, opts.maxDepth); err != nil {
 			return nil, err
 		}
 	}
-	return convertAny(e, false, nextDepth, maxDepth, seen)
+	return convertAny(e, false, nextDepth, opts, seen)
 }
 
 func isNestedListElem(v any) bool {
@@ -674,7 +712,7 @@ func isNestedListElem(v any) bool {
 		(rv.Kind() == reflect.Array && rv.Type().Elem().Kind() != reflect.Uint8)
 }
 
-func convertReflect(rv reflect.Value, listCtx bool, depth, maxDepth int, seen map[cycleKey]bool) (any, error) {
+func convertReflect(rv reflect.Value, listCtx bool, depth int, opts normOpts, seen map[cycleKey]bool) (any, error) {
 	var pushedBuf [4]cycleKey
 	pushed := pushedBuf[:0]
 	defer func() {
@@ -688,20 +726,46 @@ func convertReflect(rv reflect.Value, listCtx bool, depth, maxDepth int, seen ma
 			return nil, nil
 		}
 		if rv.Kind() == reflect.Pointer {
-			if rv.Type() == regexpType {
+			t := rv.Type()
+			if t == regexpType {
 				return rv.Interface(), nil
 			}
-			k := cycleKey{kind: reflect.Pointer, typ: rv.Type(), ptr: rv.Pointer()}
+			k := cycleKey{kind: reflect.Pointer, typ: t, ptr: rv.Pointer()}
 			if seen[k] {
 				return nil, invalidCondition("condition contains a cyclic reference")
 			}
 			seen[k] = true
 			pushed = append(pushed, k)
+			if opts.conv != nil {
+				if entry, ok := opts.conv.lookupConcrete(t); ok {
+					noConv := opts
+					noConv.conv = nil
+					return convertAny(entry.convertReflect(rv), listCtx, depth, noConv, seen)
+				}
+				if entry, ok := opts.conv.lookupIface(t); ok {
+					noConv := opts
+					noConv.conv = nil
+					return convertAny(entry.convertReflect(rv), listCtx, depth, noConv, seen)
+				}
+			}
 		}
 		rv = rv.Elem()
 	}
 	if !rv.IsValid() {
 		return nil, nil
+	}
+	if opts.conv != nil {
+		t := rv.Type()
+		if entry, ok := opts.conv.lookupConcrete(t); ok {
+			noConv := opts
+			noConv.conv = nil
+			return convertAny(entry.convertReflect(rv), listCtx, depth, noConv, seen)
+		}
+		if entry, ok := opts.conv.lookupIface(t); ok {
+			noConv := opts
+			noConv.conv = nil
+			return convertAny(entry.convertReflect(rv), listCtx, depth, noConv, seen)
+		}
 	}
 	if v, handled := normalizeLeafReflect(rv); handled {
 		return v, nil
@@ -730,11 +794,11 @@ func convertReflect(rv reflect.Value, listCtx bool, depth, maxDepth int, seen ma
 		seen[k] = true
 		pushed = append(pushed, k)
 		if isKV {
-			return convertConditionWithSeen(orderedDocToMap(rv), depth, maxDepth, seen)
+			return convertConditionWithSeen(orderedDocToMap(rv), depth, opts, seen)
 		}
-		return convertReflectSlice(rv, depth, maxDepth, seen)
+		return convertReflectSlice(rv, depth, opts, seen)
 	case reflect.Array:
-		return convertReflectSlice(rv, depth, maxDepth, seen)
+		return convertReflectSlice(rv, depth, opts, seen)
 	case reflect.Map:
 		if rv.IsNil() {
 			return nil, nil
@@ -748,17 +812,17 @@ func convertReflect(rv reflect.Value, listCtx bool, depth, maxDepth int, seen ma
 		}
 		seen[k] = true
 		pushed = append(pushed, k)
-		return convertConditionWithSeen(reflectMapToAny(rv), depth, maxDepth, seen)
+		return convertConditionWithSeen(reflectMapToAny(rv), depth, opts, seen)
 	case reflect.Struct:
-		return convertConditionWithSeen(structToMap(rv), depth, maxDepth, seen)
+		return convertConditionWithSeen(structToMap(rv), depth, opts, seen)
 	}
 	return rv.Interface(), nil
 }
 
-func convertReflectSlice(rv reflect.Value, depth, maxDepth int, seen map[cycleKey]bool) ([]any, error) {
+func convertReflectSlice(rv reflect.Value, depth int, opts normOpts, seen map[cycleKey]bool) ([]any, error) {
 	out := make([]any, rv.Len())
 	for i := range out {
-		v, err := convertListElem(rv.Index(i).Interface(), depth, maxDepth, seen)
+		v, err := convertListElem(rv.Index(i).Interface(), depth, opts, seen)
 		if err != nil {
 			return nil, err
 		}
@@ -793,16 +857,4 @@ func splitKey(key string) []string {
 		}
 	}
 	return append(parts, b.String())
-}
-
-func deepMerge(dst, src map[string]any) {
-	for k, sv := range src {
-		dm, dok := dst[k].(map[string]any)
-		sm, sok := sv.(map[string]any)
-		if dok && sok {
-			deepMerge(dm, sm)
-			continue
-		}
-		dst[k] = sv
-	}
 }

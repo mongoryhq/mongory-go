@@ -62,6 +62,39 @@ func main() {
 ok, err := mongory.Match(mongory.M{"age": mongory.M{"$gte": 18}}, record)
 ```
 
+### Composing & Extending per Compile
+
+Use `WithOptions` to define reusable option presets (no global mutable state), `And`/`Or` + `FilterLimit` for dynamic queries, and `ErrInvalidOption` vs `ErrInvalidCondition` to separate setup errors from untrusted user filters:
+
+```go
+var DomainOptions = mongory.WithOptions(
+	mongory.WithConverter(func(id primitive.ObjectID) any { return id.Hex() }),
+	mongory.WithField("minor_units", func(c *Condition) any { return c.GetMinPrice().GetUnits() }),
+	mongory.WithOperator("$moneyGte", mongory.Operator{
+		MatchElements: true,
+		Compile: func(arg any) (mongory.Predicate, error) {
+			target, ok := arg.(*money.Money)
+			if !ok || target == nil {
+				return nil, errors.New("$moneyGte requires *money.Money")
+			}
+			return func(v any, exists bool) bool {
+				rec, ok := v.(*money.Money)
+				return exists && ok && rec != nil && rec.GetCurrencyCode() == target.GetCurrencyCode() && compareMoney(rec, target) >= 0
+			}, nil
+		},
+	}),
+)
+
+// Validate preset once at init: var _ = mongory.MustCompile(nil, DomainOptions)
+
+cond := mongory.And(
+	mongory.M{"merchant_id": merchantID},
+	mongory.M{"min_price": mongory.M{"$gte": 100, "$moneyGte": targetMoney}},
+)
+m := mongory.MustCompile(cond, DomainOptions)
+top10 := mongory.FilterLimit(records, m, 10)
+```
+
 ### Debugging with `Explain` and `Trace`
 
 Both `Explain()` and `Trace(record)` are pure, non-mutating, and safe to call concurrently with `Match`:

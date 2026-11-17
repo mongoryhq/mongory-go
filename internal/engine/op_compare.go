@@ -7,8 +7,18 @@ import (
 )
 
 func init() {
-	register("$eq", func(ctx *compileCtx, c any) (matcher, error) { return addNodeMatcher(ctx, eqMatcher{condition: c}) })
-	register("$ne", func(ctx *compileCtx, c any) (matcher, error) { return addNodeMatcher(ctx, neMatcher{condition: c}) })
+	register("$eq", func(ctx *compileCtx, c any) (matcher, error) {
+		if conv := ctx.convOrNil(); conv != nil {
+			return addNodeMatcher(ctx, eqConvMatcher{condition: c, conv: conv})
+		}
+		return addNodeMatcher(ctx, eqMatcher{condition: c})
+	})
+	register("$ne", func(ctx *compileCtx, c any) (matcher, error) {
+		if conv := ctx.convOrNil(); conv != nil {
+			return addNodeMatcher(ctx, eqConvMatcher{condition: c, conv: conv, negate: true})
+		}
+		return addNodeMatcher(ctx, neMatcher{condition: c})
+	})
 	register("$gt", buildOrder("Gt", func(c int) bool { return c > 0 }))
 	register("$gte", buildOrder("Gte", func(c int) bool { return c >= 0 }))
 	register("$lt", buildOrder("Lt", func(c int) bool { return c < 0 }))
@@ -82,7 +92,11 @@ type orderMatcher struct {
 
 func buildOrder(op string, accept func(cmp int) bool) builderFunc {
 	return func(ctx *compileCtx, c any) (matcher, error) {
-		return addNodeMatcher(ctx, orderMatcher{op: op, condition: c, accept: accept})
+		m := orderMatcher{op: op, condition: c, accept: accept}
+		if conv := ctx.convOrNil(); conv != nil {
+			return addNodeMatcher(ctx, convValueMatcher{conv: conv, inner: m})
+		}
+		return addNodeMatcher(ctx, m)
 	}
 }
 

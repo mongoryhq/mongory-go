@@ -62,14 +62,49 @@ func limitExceeded(format string, args ...any) error {
 }
 
 type compileCtx struct {
-	maxDepth int
-	maxNodes int
-	depth    int
-	nodes    int
+	maxDepth  int
+	maxNodes  int
+	depth     int
+	nodes     int
+	conv      *converterRegistry
+	getters   *getterRegistry
+	customOps map[string]Operator
 }
 
 func newCompileCtx(cfg CompileConfig) *compileCtx {
-	return &compileCtx{maxDepth: cfg.MaxDepth, maxNodes: cfg.MaxNodes}
+	return &compileCtx{
+		maxDepth:  cfg.MaxDepth,
+		maxNodes:  cfg.MaxNodes,
+		conv:      cfg.converters,
+		getters:   cfg.getters,
+		customOps: cfg.operators,
+	}
+}
+
+func (c *compileCtx) withoutLimits() *compileCtx {
+	if c == nil || (c.conv == nil && c.getters == nil && len(c.customOps) == 0) {
+		return nil
+	}
+	return &compileCtx{
+		conv:      c.conv,
+		getters:   c.getters,
+		customOps: c.customOps,
+	}
+}
+
+func (c *compileCtx) convOrNil() *converterRegistry {
+	if c == nil {
+		return nil
+	}
+	return c.conv
+}
+
+func (c *compileCtx) customOp(key string) (Operator, bool) {
+	if c == nil || len(c.customOps) == 0 {
+		return Operator{}, false
+	}
+	op, ok := c.customOps[key]
+	return op, ok
 }
 
 func (c *compileCtx) addNode() error {
@@ -186,18 +221,27 @@ func sortByPriority(ms []matcher) {
 	slices.SortStableFunc(ms, func(a, b matcher) int { return a.priority() - b.priority() })
 }
 
-// buildHashCondition ANDs one matcher per key: registered operators build
-// themselves, an unknown "$" key is rejected as MongoDB does, and any other
-// key is a field lookup. "$options" is consumed by its sibling "$regex".
+// buildHashCondition ANDs one matcher per key: per-compile custom operators,
+// registered built-in operators, unknown "$" key rejection, or field lookups.
+// "$options" is consumed by its sibling "$regex". Nested non-empty allOf nodes
+// are flattened so priority sorting operates across the combined conjunction.
 func buildHashCondition(ctx *compileCtx, condition map[string]any) (matcher, error) {
 	children := make([]matcher, 0, len(condition))
+	rawCount := 0
 	for _, key := range sortedKeys(condition) {
 		var (
 			child matcher
 			err   error
 		)
+		customOp, isCustom := ctx.customOp(key)
 		build, isOperator := operators[key]
 		switch {
+		case isCustom:
+			var prev int
+			if prev, err = ctx.enter(); err == nil {
+				child, err = buildCustomOp(ctx, key, customOp, condition[key])
+				ctx.leave(prev)
+			}
 		case key == "$options":
 			if _, ok := condition["$regex"]; ok {
 				continue
@@ -227,10 +271,19 @@ func buildHashCondition(ctx *compileCtx, condition map[string]any) (matcher, err
 		if err != nil {
 			return nil, err
 		}
+		rawCount++
+		if sub, ok := child.(allOf); ok {
+			children = append(children, sub...)
+			continue
+		}
 		children = append(children, child)
 	}
-	if len(children) == 1 {
-		return children[0], nil
+	if rawCount == 1 {
+		if len(children) == 1 {
+			return children[0], nil
+		}
+		sortByPriority(children)
+		return allOf(children), nil
 	}
 	if err := ctx.addNode(); err != nil {
 		return nil, err
@@ -250,32 +303,147 @@ type literalMatcher struct {
 	arrayRecord matcher
 }
 
-func buildLiteral(ctx *compileCtx, condition any) (*literalMatcher, error) {
+func containsCustomOp(m matcher) bool {
+	switch x := m.(type) {
+	case customOpMatcher:
+		return true
+	case *extLiteralMatcher:
+		return x.hasCustomOp
+	case allOf:
+		for _, c := range x {
+			if containsCustomOp(c) {
+				return true
+			}
+		}
+	case anyOf:
+		for _, c := range x {
+			if containsCustomOp(c) {
+				return true
+			}
+		}
+	case notMatcher:
+		return containsCustomOp(x.inner)
+	case elemMatchMatcher:
+		return x.raw
+	case everyMatcher:
+		return x.raw
+	}
+	return false
+}
+
+func buildLiteral(ctx *compileCtx, condition any) (matcher, error) {
 	var (
 		dispatched matcher
 		err        error
 	)
+	conv := ctx.convOrNil()
 	switch c := condition.(type) {
 	case map[string]any:
 		dispatched, err = buildHashCondition(ctx, c)
 	case *regexp.Regexp:
-		dispatched, err = addNodeMatcher(ctx, regexMatcher{re: c})
+		m, merr := addNodeMatcher(ctx, regexMatcher{re: c})
+		if merr == nil && conv != nil {
+			m = convValueMatcher{conv: conv, inner: m}
+		}
+		dispatched, err = m, merr
 	case nil:
 		dispatched, err = addNodeMatcher(ctx, nullMatcher{})
 	default:
-		dispatched, err = addNodeMatcher(ctx, eqMatcher{condition: c})
+		if conv != nil {
+			dispatched, err = addNodeMatcher(ctx, eqConvMatcher{condition: c, conv: conv})
+		} else {
+			dispatched, err = addNodeMatcher(ctx, eqMatcher{condition: c})
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &literalMatcher{condition: condition, dispatched: dispatched}, nil
+	extCtx := ctx.withoutLimits()
+	if extCtx == nil {
+		return &literalMatcher{condition: condition, dispatched: dispatched}, nil
+	}
+	hasCustom := len(extCtx.customOps) > 0 && containsCustomOp(dispatched)
+	return &extLiteralMatcher{
+		condition:   condition,
+		dispatched:  dispatched,
+		arrayCtx:    extCtx,
+		hasCustomOp: hasCustom,
+		hasConv:     conv != nil,
+	}, nil
+}
+
+func (m *literalMatcher) ensureArrayRecord() {
+	m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition, nil) })
+}
+
+func evalMatcherOnRaw(m matcher, v any) bool {
+	switch x := m.(type) {
+	case *extLiteralMatcher:
+		if _, ok := v.([]any); ok {
+			x.ensureArrayRecord()
+			return x.arrayRecord != nil && evalMatcherOnRaw(x.arrayRecord, v)
+		}
+		if _, ok := v.(missingKey); !ok && v != nil {
+			rv := reflect.ValueOf(v)
+			if unwrapped, ok := unwrapReflect(rv); ok && isReflectList(unwrapped) {
+				x.ensureArrayRecord()
+				return x.arrayRecord != nil && x.arrayRecord.matchReflect(rv)
+			}
+		}
+		return evalMatcherOnRaw(x.dispatched, v)
+	case customOpMatcher:
+		return x.match(v)
+	case allOf:
+		for _, c := range x {
+			if !evalMatcherOnRaw(c, v) {
+				return false
+			}
+		}
+		return true
+	case anyOf:
+		for _, c := range x {
+			if evalMatcherOnRaw(c, v) {
+				return true
+			}
+		}
+		return false
+	case notMatcher:
+		return !evalMatcherOnRaw(x.inner, v)
+	case elemMatchMatcher:
+		return evalListElementsRaw(v, x.inner, true)
+	case everyMatcher:
+		return evalListElementsRaw(v, x.inner, false)
+	default:
+		return matchRaw(m, v)
+	}
+}
+
+func evalListElementsRaw(v any, inner matcher, stopOn bool) bool {
+	if arr, ok := v.([]any); ok {
+		if len(arr) == 0 {
+			return false
+		}
+		for _, e := range arr {
+			if evalMatcherOnRaw(inner, e) == stopOn {
+				return stopOn
+			}
+		}
+		return !stopOn
+	}
+	if v == nil {
+		return false
+	}
+	if _, isMissing := v.(missingKey); isMissing {
+		return false
+	}
+	return matchListElementsReflect(reflect.ValueOf(v), inner, true, stopOn)
 }
 
 func (m *literalMatcher) match(record any) bool {
 	if _, ok := record.([]any); ok {
 		// Built lazily: building it eagerly at every level doubles the tree
 		// per nesting depth.
-		m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition) })
+		m.ensureArrayRecord()
 		return m.arrayRecord != nil && m.arrayRecord.match(record)
 	}
 	return m.dispatched.match(record)
@@ -293,12 +461,12 @@ func (m *literalMatcher) matchReflect(rv reflect.Value) bool {
 		}
 	case reflect.Slice:
 		if !isKeyValueStruct(rv.Type().Elem()) {
-			m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition) })
+			m.ensureArrayRecord()
 			return m.arrayRecord != nil && m.arrayRecord.matchReflect(rv)
 		}
 	case reflect.Array:
 		if rv.Type().Elem().Kind() != reflect.Uint8 {
-			m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition) })
+			m.ensureArrayRecord()
 			return m.arrayRecord != nil && m.arrayRecord.matchReflect(rv)
 		}
 	}
@@ -309,11 +477,25 @@ func (m *literalMatcher) priority() int { return 1 + m.dispatched.priority() }
 func (m *literalMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	m.dispatched.explain(buf, prefix, isLast, isRoot)
 }
+func isArrayRecordValue(v any) bool {
+	if _, ok := v.([]any); ok {
+		return true
+	}
+	if v == nil {
+		return false
+	}
+	if _, ok := v.(missingKey); ok {
+		return false
+	}
+	rv, ok := unwrapReflect(reflect.ValueOf(v))
+	return ok && isReflectList(rv)
+}
+
 func (m *literalMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	if _, ok := record.([]any); ok {
-		m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition) })
+	if isArrayRecordValue(record) {
+		m.ensureArrayRecord()
 		if m.arrayRecord == nil {
-			writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] ArrayRecord | value=%s", formatValue(record)))
+			writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] ArrayRecord | value=%s", formatTraceValue(record)))
 			return false
 		}
 		return m.arrayRecord.trace(record, buf, prefix, isLast, isRoot)
@@ -341,7 +523,7 @@ type fieldMatcher struct {
 	fieldVal reflect.Value
 	index    int
 	isIndex  bool
-	literal  *literalMatcher
+	literal  matcher
 	slot     atomic.Pointer[fieldSlot]
 }
 
@@ -352,6 +534,8 @@ type fieldSlot struct {
 	isRegex       bool
 	field         structField
 	hasInlineMaps bool
+	getter        *boundFieldGetter
+	resolvers     []boundFieldResolver
 }
 
 func buildField(ctx *compileCtx, field string, condition any) (matcher, error) {
@@ -363,29 +547,52 @@ func buildField(ctx *compileCtx, field string, condition any) (matcher, error) {
 		return nil, err
 	}
 	index, isIndex := parseIndexKey(field)
-	return &fieldMatcher{
+	fm := &fieldMatcher{
 		field:    field,
 		fieldVal: reflect.ValueOf(field),
 		index:    index,
 		isIndex:  isIndex,
 		literal:  literal,
-	}, nil
+	}
+	var getters *getterRegistry
+	if ctx != nil {
+		getters = ctx.getters
+	}
+	extLit, _ := literal.(*extLiteralMatcher)
+	raw := extLit != nil && extLit.hasCustomOp
+	if getters != nil || raw {
+		return &extFieldMatcher{
+			fieldMatcher: fm,
+			getters:      getters,
+			raw:          raw,
+		}, nil
+	}
+	return fm, nil
+}
+
+func (m *fieldMatcher) buildSlot(t reflect.Type, getters *getterRegistry) (*fieldSlot, *structInfo) {
+	slot := &fieldSlot{typ: t}
+	var info *structInfo
+	if t.Kind() == reflect.Struct {
+		info = getStructInfo(t)
+		sf, found := info.byName[m.field]
+		slot.found = found
+		slot.isScalar = info.isTimeValuer
+		slot.isRegex = info.isRegex
+		slot.field = sf
+		slot.hasInlineMaps = len(info.inlineMaps) > 0
+	}
+	if getters != nil {
+		slot.getter, slot.resolvers = getters.resolveFor(t, m.field)
+	}
+	return slot, info
 }
 
 func (m *fieldMatcher) resolveStructSlot(t reflect.Type) (*fieldSlot, *structInfo) {
 	if slot := m.slot.Load(); slot != nil && slot.typ == t {
 		return slot, nil
 	}
-	info := getStructInfo(t)
-	sf, found := info.byName[m.field]
-	slot := &fieldSlot{
-		typ:           t,
-		found:         found,
-		isScalar:      info.isTimeValuer,
-		isRegex:       info.isRegex,
-		field:         sf,
-		hasInlineMaps: len(info.inlineMaps) > 0,
-	}
+	slot, info := m.buildSlot(t, nil)
 	if m.slot.Load() == nil {
 		m.slot.CompareAndSwap(nil, slot)
 	}
@@ -461,6 +668,13 @@ func (m *fieldMatcher) matchReflect(rv reflect.Value) bool {
 	return false
 }
 
+func elemInterface(v reflect.Value) (any, bool) {
+	if !v.IsValid() || !v.CanInterface() {
+		return nil, false
+	}
+	return v.Interface(), true
+}
+
 func (m *fieldMatcher) matchStructField(rv reflect.Value) bool {
 	slot, info := m.resolveStructSlot(rv.Type())
 	if slot.isScalar {
@@ -509,13 +723,125 @@ func (m *fieldMatcher) priority() int { return 1 + m.literal.priority() }
 func (m *fieldMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	explainBranch(buf, prefix, isLast, isRoot, fmt.Sprintf("Field(%q)", m.field), m.literal)
 }
+
+func (m *fieldMatcher) extractTraceValueWithGetters(record any, getters *getterRegistry) (any, bool) {
+	if v, ok := m.extract(record); ok {
+		return v, true
+	}
+	if record == nil {
+		return nil, false
+	}
+	if _, isMissing := record.(missingKey); isMissing {
+		return nil, false
+	}
+	rv, unwrapped := unwrapReflect(reflect.ValueOf(record))
+	if !unwrapped {
+		return nil, false
+	}
+	var cachedSlot *fieldSlot
+	var cachedInfo *structInfo
+	if getters != nil {
+		slot, info := m.buildSlot(rv.Type(), getters)
+		cachedSlot = slot
+		cachedInfo = info
+		if slot.getter != nil {
+			return slot.getter.invoke(rv, slot.getter.needPtr), true
+		}
+		for _, r := range slot.resolvers {
+			if val, handled := r.invoke(rv, r.needPtr, m.field); handled {
+				return val, true
+			}
+		}
+	}
+	switch rv.Kind() {
+	case reflect.Struct:
+		slot, info := cachedSlot, cachedInfo
+		if slot == nil {
+			slot, info = m.resolveStructSlot(rv.Type())
+		}
+		if slot.isScalar {
+			return nil, false
+		}
+		if slot.isRegex {
+			return m.extract(normalizeReflect(rv))
+		}
+		if slot.found {
+			if slot.field.singleIndex >= 0 {
+				v, ok := elemInterface(rv.Field(slot.field.singleIndex))
+				return v, ok
+			}
+			if fv, exists := fieldValue(rv, slot.field); exists {
+				v, ok := elemInterface(fv)
+				return v, ok
+			}
+		}
+		if slot.hasInlineMaps {
+			if info == nil {
+				info = getStructInfo(rv.Type())
+			}
+			for _, im := range info.inlineMaps {
+				if mv, exists := fieldValue(rv, im); exists && !mv.IsNil() {
+					if elem := mv.MapIndex(m.fieldVal); elem.IsValid() {
+						v, ok := elemInterface(elem)
+						return v, ok
+					}
+				}
+			}
+		}
+		return missing, true
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, false
+		}
+		elem := rv.MapIndex(m.fieldVal)
+		if !elem.IsValid() {
+			return missing, true
+		}
+		v, ok := elemInterface(elem)
+		return v, ok
+	case reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return nil, false
+		}
+		return m.extractTraceSliceIndex(rv), true
+	case reflect.Slice:
+		if isKeyValueStruct(rv.Type().Elem()) {
+			for i := range rv.Len() {
+				entry := rv.Index(i)
+				if entry.Field(0).String() == m.field {
+					v, ok := elemInterface(entry.Field(1))
+					return v, ok
+				}
+			}
+			return missing, true
+		}
+		return m.extractTraceSliceIndex(rv), true
+	}
+	return nil, false
+}
+
+func (m *fieldMatcher) extractTraceSliceIndex(rv reflect.Value) any {
+	if m.isIndex {
+		i := m.index
+		if i < 0 {
+			i += rv.Len()
+		}
+		if i >= 0 && i < rv.Len() {
+			if v, ok := elemInterface(rv.Index(i)); ok {
+				return v
+			}
+		}
+	}
+	return missing
+}
+
 func (m *fieldMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	value, ok := m.extract(record)
+	value, ok := m.extractTraceValueWithGetters(record, nil)
 	if !ok {
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Field(%q) | value=%s", m.field, formatValue(record)))
+		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Field(%q) | value=%s", m.field, formatTraceValue(record)))
 		return false
 	}
-	return traceWrapped(normalize(value), buf, prefix, isLast, isRoot, fmt.Sprintf("Field(%q)", m.field), m.literal, false)
+	return traceWrapped(value, buf, prefix, isLast, isRoot, fmt.Sprintf("Field(%q)", m.field), m.literal, false)
 }
 
 // parseIndexKey accepts canonical base-10 integers only: "01", "-0" and "+1"
@@ -528,11 +854,18 @@ func parseIndexKey(key string) (int, bool) {
 	return n, true
 }
 
-// buildArrayRecord applies a literal condition to an array value.
-func buildArrayRecord(condition any) (matcher, error) {
+// buildArrayRecord applies a literal condition to an array value, inheriting
+// compile-time extensions (without limits) so converters, getters, and custom
+// operators work inside array fields.
+func buildArrayRecord(condition any, ctx *compileCtx) (matcher, error) {
+	conv := ctx.convOrNil()
 	var children []matcher
 	if _, ok := condition.([]any); ok {
-		children = append(children, eqMatcher{condition: condition})
+		if conv != nil {
+			children = append(children, eqConvMatcher{condition: condition, conv: conv})
+		} else {
+			children = append(children, eqMatcher{condition: condition})
+		}
 	}
 	var (
 		child matcher
@@ -540,11 +873,11 @@ func buildArrayRecord(condition any) (matcher, error) {
 	)
 	switch c := condition.(type) {
 	case map[string]any:
-		child, err = buildHashCondition(&compileCtx{}, splitArrayCondition(c))
+		child, err = buildHashCondition(ctx, splitArrayCondition(ctx, c))
 	case *regexp.Regexp:
-		child, err = buildElemMatch(&compileCtx{}, map[string]any{"$regex": c})
+		child, err = buildElemMatch(ctx, map[string]any{"$regex": c})
 	default:
-		child, err = buildElemMatch(&compileCtx{}, map[string]any{"$eq": c})
+		child, err = buildElemMatch(ctx, map[string]any{"$eq": c})
 	}
 	if err != nil {
 		return nil, err
@@ -563,13 +896,21 @@ var elementOperators = map[string]bool{"$gt": true, "$gte": true, "$lt": true, "
 // splitArrayCondition keeps index keys and array-level operators on the array
 // itself and groups everything else (including "$options") into an implicit
 // $elemMatch.
-func splitArrayCondition(condition map[string]any) map[string]any {
+func splitArrayCondition(ctx *compileCtx, condition map[string]any) map[string]any {
 	parsed := map[string]any{}
 	elem := map[string]any{}
 	for _, key := range sortedKeys(condition) {
 		value := condition[key]
 		_, isIndex := parseIndexKey(key)
-		_, isOperator := operators[key]
+		var (
+			customOp  Operator
+			isCustom  bool
+			isBuiltin bool
+		)
+		if ctx != nil {
+			customOp, isCustom = ctx.customOps[key]
+		}
+		_, isBuiltin = operators[key]
 		switch {
 		case isIndex:
 			parsed[key] = value
@@ -579,7 +920,13 @@ func splitArrayCondition(condition map[string]any) map[string]any {
 			} else {
 				parsed[key] = value
 			}
-		case isOperator:
+		case isCustom:
+			if customOp.MatchElements {
+				elem[key] = value
+			} else {
+				parsed[key] = value
+			}
+		case isBuiltin:
 			if isElementOperator(key, value) {
 				elem[key] = value
 			} else {

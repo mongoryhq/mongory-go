@@ -8,7 +8,19 @@ import (
 func init() {
 	register("$and", func(ctx *compileCtx, c any) (matcher, error) {
 		children, err := buildConditionList(ctx, "$and", c)
-		return allOf(children), err
+		if err != nil {
+			return nil, err
+		}
+		flat := make([]matcher, 0, len(children))
+		for _, child := range children {
+			if sub, ok := child.(allOf); ok {
+				flat = append(flat, sub...)
+				continue
+			}
+			flat = append(flat, child)
+		}
+		sortByPriority(flat)
+		return allOf(flat), nil
 	})
 	register("$or", func(ctx *compileCtx, c any) (matcher, error) {
 		children, err := buildConditionList(ctx, "$or", c)
@@ -45,7 +57,7 @@ func buildConditionList(ctx *compileCtx, operator string, condition any) ([]matc
 
 // notMatcher negates a literal condition, so it also matches missing fields.
 type notMatcher struct {
-	inner *literalMatcher
+	inner matcher
 }
 
 func buildNot(ctx *compileCtx, condition any) (matcher, error) {

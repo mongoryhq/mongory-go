@@ -94,3 +94,44 @@ func ExampleMatcher_Trace() {
 	// └── [FAIL] Field("age") | value=15
 	//     └── [FAIL] Gte(18) | value=15
 }
+
+func ExampleWithOptions() {
+	type Money struct {
+		Currency string
+		Cents    int64
+	}
+	preset := mongory.WithOptions(
+		mongory.WithConverter(func(m *Money) any { return m.Cents }),
+		mongory.WithOperator("$currency", mongory.Operator{
+			Compile: func(arg any) (mongory.Predicate, error) {
+				want := arg.(string)
+				return func(v any, exists bool) bool {
+					m, ok := v.(*Money)
+					return exists && ok && m != nil && m.Currency == want
+				}, nil
+			},
+		}),
+	)
+
+	m := mongory.MustCompile(mongory.M{
+		"price": mongory.M{"$gte": 1000, "$currency": "TWD"},
+	}, preset)
+
+	fmt.Println(m.Match(mongory.M{"price": &Money{Currency: "TWD", Cents: 1500}}))
+	fmt.Println(m.Match(mongory.M{"price": &Money{Currency: "USD", Cents: 1500}}))
+	// Output:
+	// true
+	// false
+}
+
+func ExampleAnd() {
+	base := mongory.M{"status": mongory.M{"$ne": "removed"}}
+	extra := mongory.M{"status": mongory.M{"$in": mongory.A{"active", "pending"}}}
+	combined := mongory.And(base, nil, extra)
+	m := mongory.MustCompile(combined)
+	fmt.Println(m.Match(mongory.M{"status": "active"}))
+	fmt.Println(m.Match(mongory.M{"status": "removed"}))
+	// Output:
+	// true
+	// false
+}

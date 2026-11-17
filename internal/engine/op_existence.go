@@ -7,11 +7,11 @@ import (
 )
 
 func init() {
-	register("$exists", buildBoolOperator("Exists",
+	register("$exists", buildBoolOperator("Exists", false,
 		func(record any, want bool) bool { return (record != missing) == want },
 		func(rv reflect.Value, want bool) bool { return rv.IsValid() == want },
 	))
-	register("$present", buildBoolOperator("Present",
+	register("$present", buildBoolOperator("Present", true,
 		func(record any, want bool) bool { return isPresent(record) == want },
 		func(rv reflect.Value, want bool) bool { return reflectIsPresent(rv) == want },
 	))
@@ -25,13 +25,22 @@ type boolMatcher struct {
 	testReflect func(rv reflect.Value, want bool) bool
 }
 
-func buildBoolOperator(op string, test func(record any, want bool) bool, testReflect func(rv reflect.Value, want bool) bool) builderFunc {
+func buildBoolOperator(op string, useConv bool, test func(record any, want bool) bool, testReflect func(rv reflect.Value, want bool) bool) builderFunc {
 	return func(ctx *compileCtx, c any) (matcher, error) {
 		want, ok := c.(bool)
 		if !ok {
 			return nil, invalidCondition("$%s needs a boolean, got %T", strings.ToLower(op), c)
 		}
-		return addNodeMatcher(ctx, boolMatcher{op: op, want: want, test: test, testReflect: testReflect})
+		m, err := addNodeMatcher(ctx, boolMatcher{op: op, want: want, test: test, testReflect: testReflect})
+		if err != nil {
+			return nil, err
+		}
+		if useConv {
+			if conv := ctx.convOrNil(); conv != nil {
+				return convValueMatcher{conv: conv, inner: m}, nil
+			}
+		}
+		return m, nil
 	}
 }
 

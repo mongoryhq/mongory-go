@@ -315,3 +315,77 @@ func FuzzStructMatch(f *testing.F) {
 		}
 	})
 }
+
+type fuzzExtID [4]byte
+
+type fuzzExtDoc struct {
+	ID     fuzzExtID  `bson:"id"`
+	Alt    *fuzzExtID `bson:"alt"`
+	Units  int64      `bson:"units"`
+	secret string
+}
+
+func FuzzExtensions(f *testing.F) {
+	f.Add("abcd", int64(50), int64(25), uint8(0x03))
+	f.Add("efgh", int64(-10), int64(100), uint8(0x07))
+	f.Add("", int64(0), int64(0), uint8(0x00))
+
+	preset := mongory.WithOptions(
+		mongory.WithConverter(func(id fuzzExtID) any { return string(id[:]) }),
+		mongory.WithField("units_x2", func(d *fuzzExtDoc) any { return d.Units * 2 }),
+		mongory.WithFieldResolver(func(d *fuzzExtDoc, field string) (any, bool) {
+			if field == "secret" {
+				return d.secret, true
+			}
+			return nil, false
+		}),
+		mongory.WithOperator("$rawUnitsMin", mongory.Operator{
+			Compile: func(arg any) (mongory.Predicate, error) {
+				minUnits, ok := arg.(int64)
+				if !ok {
+					return nil, errors.New("expected int64")
+				}
+				return func(v any, exists bool) bool {
+					u, ok := v.(int64)
+					return exists && ok && u >= minUnits
+				}, nil
+			},
+		}),
+	)
+
+	f.Fuzz(func(t *testing.T, idStr string, units, threshold int64, mode uint8) {
+		var id fuzzExtID
+		copy(id[:], idStr)
+		var alt *fuzzExtID
+		if mode&0x01 != 0 {
+			alt = &id
+		}
+		doc := fuzzExtDoc{ID: id, Alt: alt, Units: units, secret: idStr}
+
+		c1 := M{"id": id}
+		c2 := M{"units_x2": M{"$gte": threshold}}
+		c3 := M{"units": M{"$rawUnitsMin": threshold}}
+		var opt M
+		if mode&0x02 != 0 {
+			opt = M{"alt": string(id[:])}
+		}
+		combined := mongory.And(c1, mongory.Or(c2, opt), c3, M{"secret": idStr})
+
+		for _, cond := range []any{combined, c1, c2, c3} {
+			m, err := mongory.Compile(cond, preset)
+			if err != nil {
+				if !errors.Is(err, mongory.ErrInvalidCondition) {
+					t.Fatalf("unexpected compile err: %v", err)
+				}
+				continue
+			}
+			gotVal := m.Match(doc)
+			gotPtr := m.Match(&doc)
+			if gotVal != gotPtr {
+				t.Fatalf("value vs pointer Match mismatch: val=%v ptr=%v cond=%#v", gotVal, gotPtr, cond)
+			}
+			assertMatchAndTraceAgree(t, cond, m, doc)
+			assertMatchAndTraceAgree(t, cond, m, &doc)
+		}
+	})
+}

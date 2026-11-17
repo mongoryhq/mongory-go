@@ -37,8 +37,28 @@ var ErrInvalidCondition = engine.ErrInvalidCondition
 // exceeds the configured MaxDepth or MaxNodes limit.
 var ErrLimitExceeded = engine.ErrLimitExceeded
 
+// ErrInvalidOption is returned by Compile (and panicked on by MustCompile) when
+// an Option has an invalid configuration such as a nil callback, malformed
+// operator name, built-in operator override, or unsupported target type.
+// It does not wrap ErrInvalidCondition.
+var ErrInvalidOption = engine.ErrInvalidOption
+
 // Option configures Compile, MustCompile, and Match behavior.
 type Option = engine.Option
+
+// Predicate evaluates a custom operator against raw record data.
+// When exists is false, the field is missing from its parent container and
+// value is nil; when exists is true, value retains its raw (including typed nil)
+// representation.
+type Predicate = engine.Predicate
+
+// Operator defines a per-Compile custom query operator whose name starts with "$".
+type Operator = engine.Operator
+
+// WithOptions bundles multiple options into one reusable preset Option applied
+// left to right (later entries override earlier duplicates). Nil entries are
+// ignored.
+func WithOptions(opts ...Option) Option { return engine.WithOptions(opts...) }
 
 // WithMaxDepth overrides DefaultMaxDepth (64) during compilation.
 // A non-positive value disables the depth limit.
@@ -47,6 +67,40 @@ func WithMaxDepth(depth int) Option { return engine.WithMaxDepth(depth) }
 // WithMaxNodes overrides DefaultMaxNodes (4096) during compilation.
 // A non-positive value disables the node limit.
 func WithMaxNodes(nodes int) Option { return engine.WithMaxNodes(nodes) }
+
+// WithConverter registers a symmetric converter for values of type T across
+// built-in operators and comparisons (on both conditions and records). Nil
+// pointers become null before fn runs. Custom operators registered with
+// [WithOperator] still receive raw unconverted values.
+func WithConverter[T any](fn func(T) any) Option { return engine.WithTypeConverter[T](fn) }
+
+// WithField binds a static getter function for a single field segment on values
+// matching T (concrete type, pointer *T, or interface T).
+func WithField[T any](name string, get func(T) any) Option { return engine.WithField[T](name, get) }
+
+// WithFieldResolver registers a dynamic per-segment resolver for values matching
+// T (concrete type, pointer *T, or interface T). Returning ok=false falls back
+// to earlier resolvers and then struct tag / map lookup.
+func WithFieldResolver[T any](fn func(rec T, field string) (val any, ok bool)) Option {
+	return engine.WithFieldResolver[T](fn)
+}
+
+// WithOperator registers a per-Compile custom operator (for example "$moneyGte").
+// Built-in operators and "$regex"/"$options" cannot be overridden.
+func WithOperator(name string, op Operator) Option { return engine.WithOperator(name, op) }
+
+// And combines multiple query maps into a normalized conjunction without mutating
+// callers' maps. Nil and empty M{} entries are omitted as identity elements;
+// nested $and lists are flattened, compatible pure-$ operator subdocuments are
+// merged safely, and key conflicts are preserved inside $and.
+func And(conds ...M) M { return engine.And(conds...) }
+
+// Or combines multiple query maps into a normalized disjunction without mutating
+// callers' maps. Nil (including typed-nil M(nil)) entries are skipped as omitted
+// optional branches, while explicit non-nil M{} absorbs the disjunction to M{}
+// per MongoDB match-all semantics. If no non-nil clauses remain, Or returns
+// M{"$or": A{}} (fail-closed).
+func Or(conds ...M) M { return engine.Or(conds...) }
 
 // Compile parses and validates condition once into an immutable, concurrent-safe
 // *Matcher. Like the mongo-go-driver filter parameter, condition accepts any
