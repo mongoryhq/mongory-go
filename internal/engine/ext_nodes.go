@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // extLiteralMatcher handles literal values when compile-time extensions
@@ -18,11 +19,24 @@ type extLiteralMatcher struct {
 	hasConv     bool
 
 	arrayOnce   sync.Once
+	arrayReady  atomic.Bool
 	arrayRecord matcher
 }
 
 func (m *extLiteralMatcher) ensureArrayRecord() {
-	m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition, m.arrayCtx) })
+	m.arrayOnce.Do(func() {
+		if ar, err := buildArrayRecord(m.condition, m.arrayCtx); err == nil && ar != nil {
+			m.arrayRecord = ar
+			m.arrayReady.Store(true)
+		}
+	})
+}
+
+func (m *extLiteralMatcher) activeMatcher() matcher {
+	if m.arrayReady.Load() {
+		return m.arrayRecord
+	}
+	return m.dispatched
 }
 
 func (m *extLiteralMatcher) match(record any) bool {
@@ -56,9 +70,9 @@ func (m *extLiteralMatcher) matchReflect(rv reflect.Value) bool {
 	return m.dispatched.matchReflect(rv)
 }
 
-func (m *extLiteralMatcher) priority() int { return 1 + m.dispatched.priority() }
+func (m *extLiteralMatcher) priority() int { return 1 + m.activeMatcher().priority() }
 func (m *extLiteralMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	m.dispatched.explain(buf, prefix, isLast, isRoot)
+	m.activeMatcher().explain(buf, prefix, isLast, isRoot)
 }
 func (m *extLiteralMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
 	if isArrayRecordValue(record) {

@@ -67,3 +67,77 @@ func TestMergeExpandedNodeLeafCollisions(t *testing.T) {
 		t.Fatalf("expected residual conflict a.b=1, got %#v", res)
 	}
 }
+
+func TestLazyArrayRecordUpdatesPriorityAndExplainUnderConcurrency(t *testing.T) {
+	cond := map[string]any{
+		"scores": map[string]any{
+			"$size":  map[string]any{"$gte": 3, "$lte": 5},
+			"$every": map[string]any{"$gte": 60},
+		},
+		"tags": "ts",
+		"reviews": map[string]any{
+			"approved": true,
+			"rating":   map[string]any{"$gte": 4},
+		},
+	}
+	tree, err := Compile(cond)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	all := tree.root.(allOf)
+	var beforeChildren []int
+	for _, c := range all {
+		beforeChildren = append(beforeChildren, c.priority())
+	}
+	beforeRoot := tree.root.priority()
+	if beforeRoot != 34 {
+		t.Fatalf("expected initial priority 34 (children=%v), got %d", beforeChildren, beforeRoot)
+	}
+
+	rec := map[string]any{
+		"candidate": "Alice",
+		"tags":      []any{"go", "ts", "rust"},
+		"scores":    []any{82, 91, 77},
+		"reviews": []any{
+			map[string]any{"reviewer": "r1", "approved": false, "rating": 5},
+			map[string]any{"reviewer": "r2", "approved": true, "rating": 5},
+			map[string]any{"reviewer": "r3", "approved": true, "rating": 4},
+		},
+	}
+
+	// Trigger concurrent Match, Explain, and priority reads for -race coverage.
+	done := make(chan struct{}, 4)
+	for range 4 {
+		go func() {
+			if !tree.Match(rec) {
+				t.Errorf("expected Alice to match")
+			}
+			_ = tree.root.priority()
+			_ = tree.Explain()
+			done <- struct{}{}
+		}()
+	}
+	for range 4 {
+		<-done
+	}
+
+	afterRoot := tree.root.priority()
+	if afterRoot != 40 {
+		t.Fatalf("expected updated priority 40 after lazy array build, got %d", afterRoot)
+	}
+
+	// Extension path (*extLiteralMatcher) also updates priority cleanly.
+	extTree, err := Compile(map[string]any{"tags": "ts"}, WithTypeConverter(func(s string) any { return s }))
+	if err != nil {
+		t.Fatalf("ext Compile failed: %v", err)
+	}
+	if extTree.root.priority() != 3 {
+		t.Fatalf("expected initial ext priority 3, got %d", extTree.root.priority())
+	}
+	if !extTree.Match(map[string]any{"tags": []any{"go", "ts"}}) {
+		t.Fatal("expected ext match")
+	}
+	if extTree.root.priority() != 6 {
+		t.Fatalf("expected updated ext priority 6, got %d", extTree.root.priority())
+	}
+}

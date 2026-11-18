@@ -300,6 +300,7 @@ type literalMatcher struct {
 	dispatched matcher
 
 	arrayOnce   sync.Once
+	arrayReady  atomic.Bool
 	arrayRecord matcher
 }
 
@@ -373,7 +374,19 @@ func buildLiteral(ctx *compileCtx, condition any) (matcher, error) {
 }
 
 func (m *literalMatcher) ensureArrayRecord() {
-	m.arrayOnce.Do(func() { m.arrayRecord, _ = buildArrayRecord(m.condition, nil) })
+	m.arrayOnce.Do(func() {
+		if ar, err := buildArrayRecord(m.condition, nil); err == nil && ar != nil {
+			m.arrayRecord = ar
+			m.arrayReady.Store(true)
+		}
+	})
+}
+
+func (m *literalMatcher) activeMatcher() matcher {
+	if m.arrayReady.Load() {
+		return m.arrayRecord
+	}
+	return m.dispatched
 }
 
 func evalMatcherOnRaw(m matcher, v any) bool {
@@ -473,9 +486,9 @@ func (m *literalMatcher) matchReflect(rv reflect.Value) bool {
 	return m.dispatched.matchReflect(rv)
 }
 
-func (m *literalMatcher) priority() int { return 1 + m.dispatched.priority() }
+func (m *literalMatcher) priority() int { return 1 + m.activeMatcher().priority() }
 func (m *literalMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	m.dispatched.explain(buf, prefix, isLast, isRoot)
+	m.activeMatcher().explain(buf, prefix, isLast, isRoot)
 }
 func isArrayRecordValue(v any) bool {
 	if _, ok := v.([]any); ok {
