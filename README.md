@@ -1,6 +1,13 @@
 # mongory-go
 
-Zero-dependency, pure Go MongoDB-style query matcher for in-memory Go data: compile a filter condition once into an immutable, concurrent-safe `*mongory.Matcher` and evaluate maps, BSON documents, slices, or structs.
+**Zero-dependency Go in-memory Mongo-style rule engine & query matcher** with zero-allocation map/struct evaluation and built-in **Explain & Trace** debugging — part of the [`mongory-spec`](https://github.com/mongoryhq/mongory-spec) cross-language ecosystem.
+
+**[Try the Interactive Playground & Visual Explain/Trace Debugger ↗](https://mongoryhq.github.io/mongory-central/)**
+
+[![Mongory Playground & Visual Trace](https://mongoryhq.github.io/mongory-central/playground-trace.png)](https://mongoryhq.github.io/mongory-central/)
+
+> **Zero database required:** Compile a filter condition once into an immutable, concurrent-safe `*mongory.Matcher` and evaluate maps, BSON documents, slices, or Go structs in memory.  
+> **Ecosystem:** [Interactive Playground](https://mongoryhq.github.io/mongory-central/) · [`mongory-js` (TypeScript/JS)](https://github.com/mongoryhq/mongory-js) · [`mongory-rb` (Ruby)](https://github.com/mongoryhq/mongory-rb) · [`mongory-core` (C99)](https://github.com/mongoryhq/mongory-core) · [`mongory-spec`](https://github.com/mongoryhq/mongory-spec)
 
 ## Installation
 
@@ -97,7 +104,7 @@ top10 := mongory.FilterLimit(records, m, 10)
 
 ### Debugging with `Explain` and `Trace`
 
-Both `Explain()` and `Trace(record)` are pure, non-mutating, and safe to call concurrently with `Match`:
+Both `Explain()` and `Trace(record)` are pure, non-mutating, and safe to call concurrently with `Match` (see the interactive visual AST & short-circuit tree in the [Live Playground](https://mongoryhq.github.io/mongory-central/#playground)):
 
 ```go
 fmt.Print(m.Explain())
