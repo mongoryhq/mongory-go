@@ -143,11 +143,78 @@ func (c *compileCtx) leave(prev int) {
 	}
 }
 
-// allOf matches when every child matches; empty matches anything.
-type allOf []matcher
+type priorityListener interface {
+	onPriorityChanged()
+}
 
-func (m allOf) match(record any) bool {
-	for _, c := range m {
+type childMatcher interface {
+	setParent(parent priorityListener)
+}
+
+type priorityNode struct {
+	parent priorityListener
+}
+
+func (n *priorityNode) setParent(parent priorityListener) {
+	n.parent = parent
+}
+
+func (n *priorityNode) onPriorityChanged() {
+	if n.parent != nil {
+		n.parent.onPriorityChanged()
+	}
+}
+
+func attachChild(child matcher, parent priorityListener) {
+	if cm, ok := child.(childMatcher); ok {
+		cm.setParent(parent)
+	}
+}
+
+type compositeGroup struct {
+	priorityNode
+	resortMu sync.Mutex
+	children atomic.Pointer[[]matcher]
+}
+
+func (g *compositeGroup) init(children []matcher, owner priorityListener) {
+	g.children.Store(&children)
+	for _, c := range children {
+		attachChild(c, owner)
+	}
+}
+
+func (g *compositeGroup) slice() []matcher {
+	return *g.children.Load()
+}
+
+func (g *compositeGroup) onPriorityChanged() {
+	g.resortMu.Lock()
+	cur := *g.children.Load()
+	next := make([]matcher, len(cur))
+	copy(next, cur)
+	sortByPriority(next)
+	g.children.Store(&next)
+	parent := g.parent
+	g.resortMu.Unlock()
+	if parent != nil {
+		parent.onPriorityChanged()
+	}
+}
+
+// allOf matches when every child matches; empty matches anything.
+type allOf struct {
+	compositeGroup
+}
+
+func newAllOf(children []matcher) *allOf {
+	m := &allOf{}
+	m.init(children, m)
+	return m
+}
+
+func (m *allOf) match(record any) bool {
+	for _, c := range *m.children.Load() {
 		if !c.match(record) {
 			return false
 		}
@@ -155,8 +222,8 @@ func (m allOf) match(record any) bool {
 	return true
 }
 
-func (m allOf) matchReflect(rv reflect.Value) bool {
-	for _, c := range m {
+func (m *allOf) matchReflect(rv reflect.Value) bool {
+	for _, c := range *m.children.Load() {
 		if !c.matchReflect(rv) {
 			return false
 		}
@@ -164,23 +231,32 @@ func (m allOf) matchReflect(rv reflect.Value) bool {
 	return true
 }
 
-func (m allOf) priority() int { return 1 + sumPriority(m) }
-func (m allOf) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	if len(m) == 0 {
+func (m *allOf) priority() int { return 1 + sumPriority(*m.children.Load()) }
+func (m *allOf) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	children := *m.children.Load()
+	if len(children) == 0 {
 		writeTreeLine(buf, prefix, isLast, isRoot, "And (empty)")
 		return
 	}
-	explainBranch(buf, prefix, isLast, isRoot, "And", m...)
+	explainBranch(buf, prefix, isLast, isRoot, "And", children...)
 }
-func (m allOf) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceGroup(record, buf, prefix, isLast, isRoot, "And", m, false)
+func (m *allOf) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceGroup(record, buf, prefix, isLast, isRoot, "And", *m.children.Load(), false)
 }
 
 // anyOf matches when some child matches.
-type anyOf []matcher
+type anyOf struct {
+	compositeGroup
+}
 
-func (m anyOf) match(record any) bool {
-	for _, c := range m {
+func newAnyOf(children []matcher) *anyOf {
+	m := &anyOf{}
+	m.init(children, m)
+	return m
+}
+
+func (m *anyOf) match(record any) bool {
+	for _, c := range *m.children.Load() {
 		if c.match(record) {
 			return true
 		}
@@ -188,8 +264,8 @@ func (m anyOf) match(record any) bool {
 	return false
 }
 
-func (m anyOf) matchReflect(rv reflect.Value) bool {
-	for _, c := range m {
+func (m *anyOf) matchReflect(rv reflect.Value) bool {
+	for _, c := range *m.children.Load() {
 		if c.matchReflect(rv) {
 			return true
 		}
@@ -197,16 +273,17 @@ func (m anyOf) matchReflect(rv reflect.Value) bool {
 	return false
 }
 
-func (m anyOf) priority() int { return 1 + sumPriority(m) }
-func (m anyOf) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	if len(m) == 0 {
+func (m *anyOf) priority() int { return 1 + sumPriority(*m.children.Load()) }
+func (m *anyOf) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+	children := *m.children.Load()
+	if len(children) == 0 {
 		writeTreeLine(buf, prefix, isLast, isRoot, "Or (empty)")
 		return
 	}
-	explainBranch(buf, prefix, isLast, isRoot, "Or", m...)
+	explainBranch(buf, prefix, isLast, isRoot, "Or", children...)
 }
-func (m anyOf) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceGroup(record, buf, prefix, isLast, isRoot, "Or", m, true)
+func (m *anyOf) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+	return traceGroup(record, buf, prefix, isLast, isRoot, "Or", *m.children.Load(), true)
 }
 
 func sumPriority(ms []matcher) int {
@@ -272,8 +349,8 @@ func buildHashCondition(ctx *compileCtx, condition map[string]any) (matcher, err
 			return nil, err
 		}
 		rawCount++
-		if sub, ok := child.(allOf); ok {
-			children = append(children, sub...)
+		if sub, ok := child.(*allOf); ok {
+			children = append(children, sub.slice()...)
 			continue
 		}
 		children = append(children, child)
@@ -283,19 +360,20 @@ func buildHashCondition(ctx *compileCtx, condition map[string]any) (matcher, err
 			return children[0], nil
 		}
 		sortByPriority(children)
-		return allOf(children), nil
+		return newAllOf(children), nil
 	}
 	if err := ctx.addNode(); err != nil {
 		return nil, err
 	}
 	sortByPriority(children)
-	return allOf(children), nil
+	return newAllOf(children), nil
 }
 
 // literalMatcher matches a field value against a condition that is a plain
 // value or a nested condition object. Array values take the MongoDB implicit
 // array path instead.
 type literalMatcher struct {
+	priorityNode
 	condition  any
 	dispatched matcher
 
@@ -310,23 +388,23 @@ func containsCustomOp(m matcher) bool {
 		return true
 	case *extLiteralMatcher:
 		return x.hasCustomOp
-	case allOf:
-		for _, c := range x {
+	case *allOf:
+		for _, c := range *x.children.Load() {
 			if containsCustomOp(c) {
 				return true
 			}
 		}
-	case anyOf:
-		for _, c := range x {
+	case *anyOf:
+		for _, c := range *x.children.Load() {
 			if containsCustomOp(c) {
 				return true
 			}
 		}
-	case notMatcher:
+	case *notMatcher:
 		return containsCustomOp(x.inner)
-	case elemMatchMatcher:
+	case *elemMatchMatcher:
 		return x.raw
-	case everyMatcher:
+	case *everyMatcher:
 		return x.raw
 	}
 	return false
@@ -361,23 +439,36 @@ func buildLiteral(ctx *compileCtx, condition any) (matcher, error) {
 	}
 	extCtx := ctx.withoutLimits()
 	if extCtx == nil {
-		return &literalMatcher{condition: condition, dispatched: dispatched}, nil
+		m := &literalMatcher{condition: condition, dispatched: dispatched}
+		attachChild(dispatched, m)
+		return m, nil
 	}
 	hasCustom := len(extCtx.customOps) > 0 && containsCustomOp(dispatched)
-	return &extLiteralMatcher{
+	m := &extLiteralMatcher{
 		condition:   condition,
 		dispatched:  dispatched,
 		arrayCtx:    extCtx,
 		hasCustomOp: hasCustom,
 		hasConv:     conv != nil,
-	}, nil
+	}
+	attachChild(dispatched, m)
+	return m, nil
+}
+
+func publishArrayRecord(pn *priorityNode, ar matcher, dst *matcher, ready *atomic.Bool) {
+	if ar == nil {
+		return
+	}
+	attachChild(ar, pn)
+	*dst = ar
+	ready.Store(true)
+	pn.onPriorityChanged()
 }
 
 func (m *literalMatcher) ensureArrayRecord() {
 	m.arrayOnce.Do(func() {
 		if ar, err := buildArrayRecord(m.condition, nil); err == nil && ar != nil {
-			m.arrayRecord = ar
-			m.arrayReady.Store(true)
+			publishArrayRecord(&m.priorityNode, ar, &m.arrayRecord, &m.arrayReady)
 		}
 	})
 }
@@ -406,25 +497,25 @@ func evalMatcherOnRaw(m matcher, v any) bool {
 		return evalMatcherOnRaw(x.dispatched, v)
 	case customOpMatcher:
 		return x.match(v)
-	case allOf:
-		for _, c := range x {
+	case *allOf:
+		for _, c := range *x.children.Load() {
 			if !evalMatcherOnRaw(c, v) {
 				return false
 			}
 		}
 		return true
-	case anyOf:
-		for _, c := range x {
+	case *anyOf:
+		for _, c := range *x.children.Load() {
 			if evalMatcherOnRaw(c, v) {
 				return true
 			}
 		}
 		return false
-	case notMatcher:
+	case *notMatcher:
 		return !evalMatcherOnRaw(x.inner, v)
-	case elemMatchMatcher:
+	case *elemMatchMatcher:
 		return evalListElementsRaw(v, x.inner, true)
-	case everyMatcher:
+	case *everyMatcher:
 		return evalListElementsRaw(v, x.inner, false)
 	default:
 		return matchRaw(m, v)
@@ -532,6 +623,7 @@ func (m nullMatcher) trace(record any, buf *strings.Builder, prefix string, isLa
 // fieldMatcher digs one key out of a map (or one index out of an array) and
 // hands the value to its literal matcher.
 type fieldMatcher struct {
+	priorityNode
 	field    string
 	fieldVal reflect.Value
 	index    int
@@ -567,6 +659,7 @@ func buildField(ctx *compileCtx, field string, condition any) (matcher, error) {
 		isIndex:  isIndex,
 		literal:  literal,
 	}
+	attachChild(literal, fm)
 	var getters *getterRegistry
 	if ctx != nil {
 		getters = ctx.getters
@@ -900,7 +993,7 @@ func buildArrayRecord(condition any, ctx *compileCtx) (matcher, error) {
 		return children[0], nil
 	}
 	sortByPriority(children)
-	return anyOf(children), nil
+	return newAnyOf(children), nil
 }
 
 // elementOperators apply per element when used directly on an array field.

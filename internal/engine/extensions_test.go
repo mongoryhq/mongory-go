@@ -1,6 +1,9 @@
 package engine
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildArrayRecordInheritsConfigWithoutLimits(t *testing.T) {
 	cfg := CompileConfig{
@@ -84,9 +87,9 @@ func TestLazyArrayRecordUpdatesPriorityAndExplainUnderConcurrency(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
 	}
-	all := tree.root.(allOf)
+	all := tree.root.(*allOf)
 	var beforeChildren []int
-	for _, c := range all {
+	for _, c := range all.slice() {
 		beforeChildren = append(beforeChildren, c.priority())
 	}
 	beforeRoot := tree.root.priority()
@@ -139,5 +142,110 @@ func TestLazyArrayRecordUpdatesPriorityAndExplainUnderConcurrency(t *testing.T) 
 	}
 	if extTree.root.priority() != 6 {
 		t.Fatalf("expected updated ext priority 6, got %d", extTree.root.priority())
+	}
+}
+
+func childFields(g *allOf) []string {
+	var fields []string
+	for _, c := range g.slice() {
+		if fm, ok := c.(*fieldMatcher); ok {
+			fields = append(fields, fm.field)
+		}
+	}
+	return fields
+}
+
+func TestLazyArrayRecordResortsCompositeChildren(t *testing.T) {
+	tree, err := Compile(map[string]any{
+		"tags":  "ts",
+		"age":   map[string]any{"$gte": 18},
+		"items": map[string]any{"$size": map[string]any{"$gte": 1}},
+	})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	root := tree.root.(*allOf)
+	if got := strings.Join(childFields(root), ","); got != "tags,age,items" {
+		t.Fatalf("expected initial order tags,age,items, got %s", got)
+	}
+
+	if !tree.Match(map[string]any{
+		"tags":  []any{"go", "ts"},
+		"age":   20,
+		"items": []any{"x"},
+	}) {
+		t.Fatal("expected match")
+	}
+
+	if got := strings.Join(childFields(root), ","); got != "age,tags,items" {
+		t.Fatalf("expected re-sorted order age,tags,items, got %s", got)
+	}
+	explain := tree.Explain()
+	if strings.Index(explain, `Field("age")`) > strings.Index(explain, `Field("tags")`) {
+		t.Fatalf("expected Explain to show age before tags, got:\n%s", explain)
+	}
+	matched, trace := tree.Trace(map[string]any{
+		"tags":  []any{"ts"},
+		"age":   10,
+		"items": []any{"x"},
+	})
+	if matched {
+		t.Fatal("expected mismatch on age=10")
+	}
+	if !strings.Contains(trace, "[SKIP] 2 remaining branch(es)") || strings.Contains(trace, `Field("tags")`) {
+		t.Fatalf("expected age=10 to short-circuit before tags, got:\n%s", trace)
+	}
+
+	// $or also re-sorts children and short-circuits on the cheaper branch first.
+	orTree, err := Compile(map[string]any{
+		"$or": []any{
+			map[string]any{"tags": "ts"},
+			map[string]any{"age": map[string]any{"$gte": 18}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("$or Compile failed: %v", err)
+	}
+	orNode := orTree.root.(*anyOf)
+	if f0 := orNode.slice()[0].(*fieldMatcher).field; f0 != "tags" {
+		t.Fatalf("expected initial $or first child tags, got %s", f0)
+	}
+	if !orTree.Match(map[string]any{"tags": []any{"go", "ts"}, "age": 10}) {
+		t.Fatal("expected initial $or match")
+	}
+	if f0 := orNode.slice()[0].(*fieldMatcher).field; f0 != "age" {
+		t.Fatalf("expected re-sorted $or first child age, got %s", f0)
+	}
+
+	// Wrapper chain ($not + nested array field) + extLiteralMatcher path re-sort cleanly under concurrency.
+	wrappedTree, err := Compile(map[string]any{
+		"matrix": map[string]any{"tags": map[string]any{"$not": "bad"}},
+		"score":  map[string]any{"$gte": 0, "$lte": 100, "$ne": 50},
+	}, WithTypeConverter(func(s string) any { return s }))
+	if err != nil {
+		t.Fatalf("wrapped Compile failed: %v", err)
+	}
+	wRoot := wrappedTree.root.(*allOf)
+	if wRoot.slice()[0].(*fieldMatcher).field != "matrix" {
+		t.Fatalf("expected initial matrix before score, got %s", wRoot.slice()[0].(*fieldMatcher).field)
+	}
+	done := make(chan struct{}, 4)
+	for range 4 {
+		go func() {
+			if !wrappedTree.Match(map[string]any{
+				"matrix": []any{map[string]any{"tags": []any{"good"}}},
+				"score":  10,
+			}) {
+				t.Errorf("expected wrapped match")
+			}
+			_ = wrappedTree.Explain()
+			done <- struct{}{}
+		}()
+	}
+	for range 4 {
+		<-done
+	}
+	if wRoot.slice()[0].(*fieldMatcher).field != "score" {
+		t.Fatalf("expected re-sorted score before matrix, got %s", wRoot.slice()[0].(*fieldMatcher).field)
 	}
 }

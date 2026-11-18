@@ -13,18 +13,21 @@ func init() {
 		}
 		flat := make([]matcher, 0, len(children))
 		for _, child := range children {
-			if sub, ok := child.(allOf); ok {
-				flat = append(flat, sub...)
+			if sub, ok := child.(*allOf); ok {
+				flat = append(flat, sub.slice()...)
 				continue
 			}
 			flat = append(flat, child)
 		}
 		sortByPriority(flat)
-		return allOf(flat), nil
+		return newAllOf(flat), nil
 	})
 	register("$or", func(ctx *compileCtx, c any) (matcher, error) {
 		children, err := buildConditionList(ctx, "$or", c)
-		return anyOf(children), err
+		if err != nil {
+			return nil, err
+		}
+		return newAnyOf(children), nil
 	})
 	register("$not", buildNot)
 }
@@ -57,6 +60,7 @@ func buildConditionList(ctx *compileCtx, operator string, condition any) ([]matc
 
 // notMatcher negates a literal condition, so it also matches missing fields.
 type notMatcher struct {
+	priorityNode
 	inner matcher
 }
 
@@ -68,15 +72,17 @@ func buildNot(ctx *compileCtx, condition any) (matcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return notMatcher{inner: inner}, nil
+	m := &notMatcher{inner: inner}
+	attachChild(inner, m)
+	return m, nil
 }
 
-func (m notMatcher) match(record any) bool              { return !m.inner.match(record) }
-func (m notMatcher) matchReflect(rv reflect.Value) bool { return !m.inner.matchReflect(rv) }
-func (m notMatcher) priority() int                      { return 1 + m.inner.priority() }
-func (m notMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+func (m *notMatcher) match(record any) bool              { return !m.inner.match(record) }
+func (m *notMatcher) matchReflect(rv reflect.Value) bool { return !m.inner.matchReflect(rv) }
+func (m *notMatcher) priority() int                      { return 1 + m.inner.priority() }
+func (m *notMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	explainBranch(buf, prefix, isLast, isRoot, "Not", m.inner)
 }
-func (m notMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *notMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
 	return traceWrapped(record, buf, prefix, isLast, isRoot, "Not", m.inner, true)
 }

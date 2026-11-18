@@ -15,6 +15,7 @@ func init() {
 // elemMatchMatcher matches an array with at least one element satisfying the
 // condition.
 type elemMatchMatcher struct {
+	priorityNode
 	inner matcher
 	raw   bool
 }
@@ -24,7 +25,9 @@ func buildElemMatch(ctx *compileCtx, condition any) (matcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return elemMatchMatcher{inner: inner, raw: containsCustomOp(inner)}, nil
+	m := &elemMatchMatcher{inner: inner, raw: containsCustomOp(inner)}
+	attachChild(inner, m)
+	return m, nil
 }
 
 func matchListElementsAny(record any, inner matcher, raw, stopOn bool) bool {
@@ -69,25 +72,26 @@ func matchListElementsReflect(rv reflect.Value, inner matcher, raw, stopOn bool)
 	return !stopOn
 }
 
-func (m elemMatchMatcher) match(record any) bool {
+func (m *elemMatchMatcher) match(record any) bool {
 	return matchListElementsAny(record, m.inner, m.raw, true)
 }
 
-func (m elemMatchMatcher) matchReflect(rv reflect.Value) bool {
+func (m *elemMatchMatcher) matchReflect(rv reflect.Value) bool {
 	return matchListElementsReflect(rv, m.inner, m.raw, true)
 }
 
-func (m elemMatchMatcher) priority() int { return 3 + m.inner.priority() }
-func (m elemMatchMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+func (m *elemMatchMatcher) priority() int { return 3 + m.inner.priority() }
+func (m *elemMatchMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	explainBranch(buf, prefix, isLast, isRoot, "ElemMatch", m.inner)
 }
-func (m elemMatchMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *elemMatchMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
 	return traceArrayElements(record, buf, prefix, isLast, isRoot, "ElemMatch", m.inner, true)
 }
 
 // everyMatcher matches a non-empty array whose elements all satisfy the
 // condition.
 type everyMatcher struct {
+	priorityNode
 	inner matcher
 	raw   bool
 }
@@ -97,22 +101,24 @@ func buildEvery(ctx *compileCtx, condition any) (matcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return everyMatcher{inner: inner, raw: containsCustomOp(inner)}, nil
+	m := &everyMatcher{inner: inner, raw: containsCustomOp(inner)}
+	attachChild(inner, m)
+	return m, nil
 }
 
-func (m everyMatcher) match(record any) bool {
+func (m *everyMatcher) match(record any) bool {
 	return matchListElementsAny(record, m.inner, m.raw, false)
 }
 
-func (m everyMatcher) matchReflect(rv reflect.Value) bool {
+func (m *everyMatcher) matchReflect(rv reflect.Value) bool {
 	return matchListElementsReflect(rv, m.inner, m.raw, false)
 }
 
-func (m everyMatcher) priority() int { return 3 + m.inner.priority() }
-func (m everyMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+func (m *everyMatcher) priority() int { return 3 + m.inner.priority() }
+func (m *everyMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	explainBranch(buf, prefix, isLast, isRoot, "Every", m.inner)
 }
-func (m everyMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *everyMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
 	return traceArrayElements(record, buf, prefix, isLast, isRoot, "Every", m.inner, false)
 }
 
@@ -177,6 +183,7 @@ func buildElementCondition(ctx *compileCtx, operator string, condition any) (mat
 // sizeMatcher matches an array whose length satisfies a literal condition,
 // so both {"$size": 3} and {"$size": {"$gte": 1}} work.
 type sizeMatcher struct {
+	priorityNode
 	inner matcher
 }
 
@@ -188,24 +195,26 @@ func buildSize(ctx *compileCtx, condition any) (matcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sizeMatcher{inner: inner}, nil
+	m := &sizeMatcher{inner: inner}
+	attachChild(inner, m)
+	return m, nil
 }
 
-func (m sizeMatcher) match(record any) bool {
+func (m *sizeMatcher) match(record any) bool {
 	arr, ok := record.([]any)
 	return ok && m.inner.match(int64(len(arr)))
 }
 
-func (m sizeMatcher) matchReflect(rv reflect.Value) bool {
+func (m *sizeMatcher) matchReflect(rv reflect.Value) bool {
 	list, ok := unwrapReflect(rv)
 	return ok && isReflectList(list) && m.inner.match(int64(list.Len()))
 }
 
-func (m sizeMatcher) priority() int { return 2 + m.inner.priority() }
-func (m sizeMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+func (m *sizeMatcher) priority() int { return 2 + m.inner.priority() }
+func (m *sizeMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
 	explainBranch(buf, prefix, isLast, isRoot, "Size", m.inner)
 }
-func (m sizeMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *sizeMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
 	arr, ok := extractTraceList(record)
 	if !ok {
 		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Size | value=%s", formatTraceValue(record)))

@@ -12,6 +12,7 @@ import (
 // (converters, getters, or custom operators) are active, keeping the default
 // literalMatcher zero-overhead.
 type extLiteralMatcher struct {
+	priorityNode
 	condition   any
 	dispatched  matcher
 	arrayCtx    *compileCtx // nil limits; keeps converters, getters, customOps
@@ -26,8 +27,7 @@ type extLiteralMatcher struct {
 func (m *extLiteralMatcher) ensureArrayRecord() {
 	m.arrayOnce.Do(func() {
 		if ar, err := buildArrayRecord(m.condition, m.arrayCtx); err == nil && ar != nil {
-			m.arrayRecord = ar
-			m.arrayReady.Store(true)
+			publishArrayRecord(&m.priorityNode, ar, &m.arrayRecord, &m.arrayReady)
 		}
 	})
 }
