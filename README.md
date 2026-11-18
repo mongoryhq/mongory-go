@@ -139,6 +139,13 @@ MONGORY_SPEC_DIR=../mongory-spec go test -v ./...
 go test -run '^$' -bench . -benchmem
 ```
 
+## Differences from MongoDB
+
+- **`$every` (Mongory extension)**: Requires all array elements to match and returns `false` on empty arrays `[]`.
+- **`$present` (Mongory extension)**: Returns `false` for missing keys, `nil`, `false`, `""`, `[]`, and `{}` (empty container).
+- **`$regex` / `$options`**: Uses Go RE2 within the cross-engine subset (`i`, `m`, `s` flags only). Unknown `$`-prefixed operators fail at `Compile` time.
+- Full specification: [`mongory-spec` Differences from MongoDB](https://github.com/mongoryhq/mongory-spec#37-differences-from-mongodb-query-syntax).
+
 ## Versioning Policy
 
 - Use `v0.x` while the API is evolving

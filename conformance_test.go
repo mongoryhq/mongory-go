@@ -16,7 +16,7 @@ import (
 //	MONGORY_SPEC_DIR=../mongory-spec go test -run TestConformance ./...
 
 var conformanceDirs = []string{
-	"array", "compare", "composite", "errors", "existance", "field", "inclusion", "regex",
+	"array", "compare", "composite", "errors", "existence", "field", "inclusion", "regex",
 }
 
 type specSuite struct {
