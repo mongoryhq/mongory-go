@@ -152,6 +152,10 @@ go test -run '^$' -bench . -benchmem
 - Release `v1` once stable
 - For `v2+`, use semantic import paths (e.g., `github.com/mongoryhq/mongory-go/v2`)
 
+## Performance
+
+See [docs/performance.md](docs/performance.md) and [`scripts/bench.sh`](scripts/bench.sh) for zero-allocation benchmark results.
+
 ## License
 
 License: MIT
