@@ -5,8 +5,6 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  schedule:
-    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       spec_ref:
@@ -16,7 +14,6 @@ on:
 
 jobs:
   conformance:
-    if: github.event_name != 'schedule'
     name: Conformance Go ${{ matrix.go-version }} on ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -72,27 +69,3 @@ jobs:
         env:
           MONGORY_SPEC_DIR: ${{ github.workspace }}/mongory-spec
         run: go test -race -run 'TestConformance' ./...
-
-  conformance-edge:
-    name: Spec Edge Preview (mongory-spec@main)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Checkout mongory-spec@main
-        uses: actions/checkout@v4
-        with:
-          repository: mongoryhq/mongory-spec
-          ref: main
-          path: mongory-spec
-      - name: Show mongory-spec revision
-        working-directory: mongory-spec
-        run: echo "mongory-spec $(cat VERSION) @ $(git rev-parse --short HEAD)"
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-      - name: Run conformance tests
-        env:
-          MONGORY_SPEC_DIR: ${{ github.workspace }}/mongory-spec
-        run: go test -race -run 'TestConformance' -v ./...
