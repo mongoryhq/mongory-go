@@ -69,6 +69,25 @@ func main() {
 ok, err := mongory.Match(mongory.M{"age": mongory.M{"$gte": 18}}, record)
 ```
 
+### Operator Constants (`mongory-go/op`)
+
+Import the optional `github.com/mongoryhq/mongory-go/op` subpackage for compile-time checked operator keys with zero runtime overhead:
+
+```go
+import (
+	"github.com/mongoryhq/mongory-go"
+	"github.com/mongoryhq/mongory-go/op"
+)
+
+m := mongory.MustCompile(mongory.M{
+	"age": mongory.M{op.Gte: 18, op.Lt: 65},
+	op.Or: mongory.A{
+		mongory.M{"role": mongory.M{op.In: mongory.A{"admin", "editor"}}},
+		mongory.M{"name": mongory.M{op.Regex: "^A", op.Options: "i"}},
+	},
+})
+```
+
 ### Composing & Extending per Compile
 
 Use `WithOptions` to define reusable option presets (no global mutable state), `And`/`Or` + `FilterLimit` for dynamic queries, and `ErrInvalidOption` vs `ErrInvalidCondition` to separate setup errors from untrusted user filters:
