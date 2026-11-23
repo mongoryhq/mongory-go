@@ -175,6 +175,11 @@ go test -run '^$' -bench . -benchmem
 
 See [docs/performance.md](docs/performance.md) and [`scripts/bench.sh`](scripts/bench.sh) for zero-allocation benchmark results.
 
+## Security & Untrusted Input
+
+- **Engine protections**: Pure in-memory evaluation (no SQL, no `$where`/`eval`), linear-time Go RE2 `$regex` (immune to ReDoS), cycle detection, and configurable `WithMaxDepth` (default `64`) / `WithMaxNodes` (default `4096`) compile limits.
+- **Application responsibility**: If you accept query conditions from untrusted callers, validate that expected scalar values are not operator maps (to prevent NoSQL-style operator injection such as `{"$ne": null}`) and allowlist queryable fields before evaluating records containing sensitive data.
+
 ## License
 
 License: MIT
