@@ -311,7 +311,7 @@ func WithTypeConverter[T any](fn func(T) any) Option {
 				return fn(v.(T))
 			},
 			convertReflect: func(rv reflect.Value) any {
-				if rv.CanAddr() && rv.CanInterface() {
+				if rv.CanAddr() && rv.Type() == typ && rv.CanInterface() {
 					return fn(*(*T)(unsafe.Pointer(rv.Addr().UnsafePointer())))
 				}
 				if rv.CanInterface() {

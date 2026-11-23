@@ -49,8 +49,13 @@ func normalize(v any) any {
 func normalizeFast(v any) (any, bool) {
 	switch x := v.(type) {
 	case nil, missingKey, bool, string, int64, float64, time.Time,
-		map[string]any, []any, *regexp.Regexp:
+		map[string]any, []any:
 		return v, true
+	case *regexp.Regexp:
+		if x == nil {
+			return nil, true
+		}
+		return x, true
 	case int:
 		return int64(x), true
 	case int32:
@@ -699,7 +704,7 @@ func isNestedListElem(v any) bool {
 		return true
 	}
 	rv := reflect.ValueOf(v)
-	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+	for depth := 0; depth < maxPointerDepth && rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface); depth++ {
 		if rv.IsNil() || (rv.Kind() == reflect.Pointer && rv.Type() == regexpType) {
 			return false
 		}

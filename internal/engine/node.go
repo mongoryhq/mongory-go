@@ -420,11 +420,15 @@ func buildLiteral(ctx *compileCtx, condition any) (matcher, error) {
 	case map[string]any:
 		dispatched, err = buildHashCondition(ctx, c)
 	case *regexp.Regexp:
-		m, merr := addNodeMatcher(ctx, regexMatcher{re: c})
-		if merr == nil && conv != nil {
-			m = convValueMatcher{conv: conv, inner: m}
+		if c == nil {
+			dispatched, err = addNodeMatcher(ctx, nullMatcher{})
+		} else {
+			m, merr := addNodeMatcher(ctx, regexMatcher{re: c})
+			if merr == nil && conv != nil {
+				m = convValueMatcher{conv: conv, inner: m}
+			}
+			dispatched, err = m, merr
 		}
-		dispatched, err = m, merr
 	case nil:
 		dispatched, err = addNodeMatcher(ctx, nullMatcher{})
 	default:
@@ -981,7 +985,11 @@ func buildArrayRecord(condition any, ctx *compileCtx) (matcher, error) {
 	case map[string]any:
 		child, err = buildHashCondition(ctx, splitArrayCondition(ctx, c))
 	case *regexp.Regexp:
-		child, err = buildElemMatch(ctx, map[string]any{"$regex": c})
+		if c == nil {
+			child, err = buildElemMatch(ctx, map[string]any{"$eq": nil})
+		} else {
+			child, err = buildElemMatch(ctx, map[string]any{"$regex": c})
+		}
 	default:
 		child, err = buildElemMatch(ctx, map[string]any{"$eq": c})
 	}

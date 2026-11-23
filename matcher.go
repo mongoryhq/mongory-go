@@ -17,11 +17,17 @@ type Matcher struct {
 // fields resolve via mongory, bson, or json tag, falling back to the exact Go
 // field name (including when tagged "-"); only ",inline" fields are flattened.
 func (m *Matcher) Match(record any) bool {
+	if m == nil || m.tree == nil {
+		return false
+	}
 	return m.tree.Match(record)
 }
 
 // Explain returns a human-readable tree diagram of the compiled matcher.
 func (m *Matcher) Explain() string {
+	if m == nil || m.tree == nil {
+		return ""
+	}
 	return m.tree.Explain()
 }
 
@@ -34,6 +40,9 @@ func (m *Matcher) String() string {
 // match outcome and a human-readable per-node evaluation trace.
 // Trace does not mutate m and is safe to call concurrently with Match.
 func (m *Matcher) Trace(record any) (bool, string) {
+	if m == nil || m.tree == nil {
+		return false, ""
+	}
 	return m.tree.Trace(record)
 }
 
@@ -45,6 +54,9 @@ func isStructElem[E any]() bool {
 // preserving order. The input slice is not modified. Returns nil when nothing
 // matches.
 func Filter[S ~[]E, E any](records S, m *Matcher) S {
+	if m == nil || m.tree == nil {
+		return nil
+	}
 	var out S
 	if isStructElem[E]() {
 		for i := range records {
@@ -67,7 +79,7 @@ func Filter[S ~[]E, E any](records S, m *Matcher) S {
 // not bound results (identical to [Filter]); limit == 0 returns nil. Returns
 // nil when nothing matches.
 func FilterLimit[S ~[]E, E any](records S, m *Matcher, limit int) S {
-	if limit == 0 {
+	if limit == 0 || m == nil || m.tree == nil {
 		return nil
 	}
 	if limit < 0 {
@@ -99,6 +111,10 @@ func FilterLimit[S ~[]E, E any](records S, m *Matcher, limit int) S {
 // Find returns the first record in records that matches m and reports whether
 // one was found.
 func Find[S ~[]E, E any](records S, m *Matcher) (E, bool) {
+	if m == nil || m.tree == nil {
+		var zero E
+		return zero, false
+	}
 	if isStructElem[E]() {
 		for i := range records {
 			if m.Match(&records[i]) {
@@ -125,6 +141,9 @@ func Any[S ~[]E, E any](records S, m *Matcher) bool {
 
 // Count returns the number of records in records that match m.
 func Count[S ~[]E, E any](records S, m *Matcher) int {
+	if m == nil || m.tree == nil {
+		return 0
+	}
 	n := 0
 	if isStructElem[E]() {
 		for i := range records {

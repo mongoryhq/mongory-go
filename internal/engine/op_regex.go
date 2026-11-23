@@ -43,6 +43,9 @@ func buildRegex(ctx *compileCtx, condition, options any) (matcher, error) {
 	}
 	switch c := condition.(type) {
 	case *regexp.Regexp:
+		if c == nil {
+			return nil, invalidCondition("$regex needs a string or *regexp.Regexp, got <nil>")
+		}
 		if flags != "" {
 			return nil, invalidCondition("$options cannot modify a compiled *regexp.Regexp")
 		}
