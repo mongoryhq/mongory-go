@@ -1,5 +1,12 @@
 # mongory-go
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/mongoryhq/mongory-go.svg)](https://pkg.go.dev/github.com/mongoryhq/mongory-go)
+[![Release](https://img.shields.io/github/v/release/mongoryhq/mongory-go)](https://github.com/mongoryhq/mongory-go/releases)
+[![CI](https://github.com/mongoryhq/mongory-go/actions/workflows/ci.yml/badge.svg)](https://github.com/mongoryhq/mongory-go/actions/workflows/ci.yml)
+[![mongory-spec](https://github.com/mongoryhq/mongory-go/actions/workflows/spec-conformance.yml/badge.svg)](https://github.com/mongoryhq/mongory-go/actions/workflows/spec-conformance.yml)
+![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Zero-dependency Go in-memory Mongo-style rule engine & query matcher** with zero-allocation map/struct evaluation and built-in **Explain & Trace** debugging — part of the [`mongory-spec`](https://github.com/mongoryhq/mongory-spec) cross-language ecosystem.
 
 **[Try the Interactive Playground & Visual Explain/Trace Debugger ↗](https://mongoryhq.github.io/mongory-central/)**
