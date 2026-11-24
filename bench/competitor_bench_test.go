@@ -87,12 +87,12 @@ func toPlainMap(m mongory.M) map[string]any {
 }
 
 type peerCase struct {
-	name        string
-	condition   mongory.M
-	lungoCond   map[string]any // optional override when lungo requires BSON primitive types
-	connorCond  map[string]any // optional override for connor's operator dialect
-	skipConnor  bool
-	skipLungo   bool
+	name       string
+	condition  mongory.M
+	lungoCond  map[string]any // optional override when lungo requires BSON primitive types
+	connorCond map[string]any // optional override for connor's operator dialect
+	skipConnor bool
+	skipLungo  bool
 }
 
 var peerCases = []peerCase{
