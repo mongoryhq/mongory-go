@@ -7,7 +7,7 @@
 ![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Zero-dependency, pure Go in-memory MongoDB-style query & rule engine** — with `0 allocs/op` map/struct hot paths, built-in `Explain` / `Trace` debugging, and cross-language parity via [`mongory-spec`](https://github.com/mongoryhq/mongory-spec).
+**Zero-dependency, pure Go in-memory MongoDB-style query and rule engine** with `0 allocs/op` map/struct hot paths, built-in `Explain` / `Trace` debugging, and cross-language parity via [`mongory-spec`](https://github.com/mongoryhq/mongory-spec).
 
 **[Try the Interactive Playground & Visual Explain/Trace Debugger ↗](https://mongoryhq.github.io/mongory-central/)**
 
@@ -88,7 +88,7 @@ Measured on Apple M3 (macOS arm64, `10,000` records per op; full Plain Go & peer
 | `nested_and` | `47.71 ns/rec` | `74.05 ns/rec` | `169.4 ns/rec` | **1.55x faster** | **3.55x faster** |
 | `large_in_500` | `28.14 ns/rec` | `2,474 ns/rec` | `4,855 ns/rec` | **87.9x faster** | **172.5x faster** |
 
-*(Map hot paths run at `25.27 ns/rec` simple and `27.35 ns/rec` for 500-item `$in`; struct `Count` runs at `35.44 ns/rec` simple — all `0 allocs/op`. Peer benchmarks live in the isolated [`bench/`](bench) submodule so the root module stays zero-dependency.)*
+*(Map hot paths run at `25.27 ns/rec` simple and `27.35 ns/rec` for 500-item `$in`; struct `Count` runs at `35.44 ns/rec` simple, all at `0 allocs/op`. Peer benchmarks live in the isolated [`bench/`](bench) submodule so the root module stays zero-dependency.)*
 
 ## Debugging with `Explain` and `Trace`
 
@@ -163,7 +163,7 @@ m := mongory.MustCompile(mongory.M{
 ## Semantics, Differences & Conformance
 
 - **Conditions & Records**: Accepts `mongory.M`, `map[string]any`, `bson.M`/`bson.D`, structs or struct pointers, slices, or scalars. Dot paths (`"address.city"`), escaped dots (`"a\\.b"`), array indexes (`"tags.0"`, `"tags.-1"`), and MongoDB implicit array matching apply. `ObjectID` (`[N]byte`) and `DateTime` (`Time() time.Time`) work without importing a BSON driver.
-- **Struct field keys**: Resolve tags in priority order (`mongory` → `bson` → `json` → bare tag), falling back to the exact Go field name (no lowercasing). `,inline` struct/map fields are flattened.
+- **Struct field keys**: Resolve tags in priority order (`mongory` > `bson` > `json` > bare tag), falling back to the exact Go field name (no lowercasing). `,inline` struct/map fields are flattened.
 - **Operators (17)**: `$eq $ne $gt $gte $lt $lte $in $nin $exists $present $and $or $not $elemMatch $every $size $regex` (`$options`: `i`, `m`, `s`). Unknown `$` operators fail fast at `Compile` time.
 - **Differences from MongoDB**: `$every` (returns `false` on `[]`) and `$present` are Mongory extensions; `$regex` uses Go RE2 within the cross-engine `i`/`m`/`s` subset. See [`mongory-spec` Differences from MongoDB](https://github.com/mongoryhq/mongory-spec#37-differences-from-mongodb-query-syntax).
 

@@ -35,14 +35,14 @@ cd bench && go test -run '^$' -bench=BenchmarkCompetitors -benchmem -benchtime=5
 
 Measured against `github.com/256dpi/lungo/mongokit` (`v0.4.0`) and `github.com/SierraSoftworks/connor` (`v1.0.2`) on `10,000` records per op (Apple M3, macOS arm64):
 
-| Case | `mongory-go` (`0 B/op`, `0 allocs/op`) | `lungo/mongokit` (`10k–16k allocs/op`) | `connor` (`10k–21k allocs/op`) | `mongory` vs `lungo` | `mongory` vs `connor` |
+| Case | `mongory-go` (`0 B/op`, `0 allocs/op`) | `lungo/mongokit` (`10k-16k allocs/op`) | `connor` (`10k-21k allocs/op`) | `mongory` vs `lungo` | `mongory` vs `connor` |
 |---|---:|---:|---:|---:|---:|
 | `simple` | `30.16 ns/rec` | `55.41 ns/rec` | `121.7 ns/rec` | **1.84x faster** | **4.04x faster** |
 | `or` | `44.92 ns/rec` | `109.7 ns/rec` | `239.9 ns/rec` | **2.44x faster** | **5.34x faster** |
 | `nested_and` | `47.71 ns/rec` | `74.05 ns/rec` | `169.4 ns/rec` | **1.55x faster** | **3.55x faster** |
-| `in_array_field` | `49.14 ns/rec` | `85.10 ns/rec` | *(not supported)* | **1.73x faster** | — |
+| `in_array_field` | `49.14 ns/rec` | `85.10 ns/rec` | *(not supported)* | **1.73x faster** | - |
 | `large_in_500` | `28.14 ns/rec` | `2,474 ns/rec` | `4,855 ns/rec` | **87.9x faster** | **172.5x faster** |
-| `regex` | `45.96 ns/rec` | `52.27 ns/rec` | *(not supported)* | **1.14x faster** | — |
+| `regex` | `45.96 ns/rec` | `52.27 ns/rec` | *(not supported)* | **1.14x faster** | - |
 
 *(Note: `lungo/mongokit` requires BSON `primitive.Regex` for regex queries; `connor` uses `$ge` instead of `$gte`, nested maps instead of dot-paths, and does not support array `$in` intersection or `$regex`.)*
 
