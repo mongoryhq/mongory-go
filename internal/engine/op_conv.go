@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"strings"
 	"time"
 )
 
@@ -31,17 +30,23 @@ func (m convValueMatcher) matchReflect(rv reflect.Value) bool {
 }
 
 func (m convValueMatcher) priority() int { return m.inner.priority() }
-func (m convValueMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	m.inner.explain(buf, prefix, isLast, isRoot)
+func (m convValueMatcher) explainNode() ExplainNode {
+	return m.inner.explainNode()
 }
-func (m convValueMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m convValueMatcher) traceNode(record any) (bool, TraceNode) {
 	matched := matchRaw(m, record)
-	var labelBuf strings.Builder
-	m.inner.explain(&labelBuf, "", true, true)
-	label := strings.TrimRight(labelBuf.String(), "\n")
-	line := fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), label, formatTraceValue(record))
-	writeTreeLine(buf, prefix, isLast, isRoot, line)
-	return matched
+	ex := m.inner.explainNode()
+	return matched, TraceNode{
+		Kind:      ex.Kind,
+		Status:    traceStatus(matched),
+		Label:     ex.Label,
+		Priority:  ex.Priority,
+		Operator:  ex.Operator,
+		Field:     ex.Field,
+		ValueText: formatTraceValue(record),
+		Value:     snapshotTraceValue(record),
+		Exists:    boolPtr(recordExists(record)),
+	}
 }
 
 // eqConvMatcher implements $eq and $ne when converters are registered.
@@ -89,11 +94,17 @@ func (m eqConvMatcher) label() string {
 	}
 	return fmt.Sprintf("%s(%s)", op, formatValue(m.condition))
 }
-func (m eqConvMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m eqConvMatcher) operator() string {
+	if m.negate {
+		return "$ne"
+	}
+	return "$eq"
 }
-func (m eqConvMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+func (m eqConvMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: m.operator()}
+}
+func (m eqConvMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", m.operator(), m.label())
 }
 
 // inConvMatcher implements $in and $nin when converters are registered.
@@ -205,11 +216,11 @@ func (m inConvMatcher) containsSetReflectConv(rv reflect.Value) bool {
 }
 
 func (m inConvMatcher) priority() int { return m.in.priority() }
-func (m inConvMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	m.in.explain(buf, prefix, isLast, isRoot)
+func (m inConvMatcher) explainNode() ExplainNode {
+	return m.in.explainNode()
 }
-func (m inConvMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.in.label())
+func (m inConvMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", m.in.operator(), m.in.label())
 }
 
 func valuesEqualConv(a, b any, conv *converterRegistry) bool {

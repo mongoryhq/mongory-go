@@ -91,9 +91,9 @@ func (m regexMatcher) priority() int {
 }
 
 func (m regexMatcher) label() string { return "Regex(/" + m.re.String() + "/)" }
-func (m regexMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m regexMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: "$regex"}
 }
-func (m regexMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+func (m regexMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", "$regex", m.label())
 }

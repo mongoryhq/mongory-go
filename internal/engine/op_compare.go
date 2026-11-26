@@ -60,11 +60,11 @@ func (m eqMatcher) matchReflect(rv reflect.Value) bool {
 
 func (eqMatcher) priority() int   { return 1 }
 func (m eqMatcher) label() string { return fmt.Sprintf("Eq(%s)", formatValue(m.condition)) }
-func (m eqMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m eqMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: "$eq"}
 }
-func (m eqMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+func (m eqMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", "$eq", m.label())
 }
 
 // neMatcher is the strict negation of eqMatcher.
@@ -76,11 +76,11 @@ func (m neMatcher) match(record any) bool              { return !eqMatcher(m).ma
 func (m neMatcher) matchReflect(rv reflect.Value) bool { return !eqMatcher(m).matchReflect(rv) }
 func (neMatcher) priority() int                        { return 1 }
 func (m neMatcher) label() string                      { return fmt.Sprintf("Ne(%s)", formatValue(m.condition)) }
-func (m neMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m neMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: "$ne"}
 }
-func (m neMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+func (m neMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", "$ne", m.label())
 }
 
 // orderMatcher implements $gt/$gte/$lt/$lte; incomparable pairs never match.
@@ -114,9 +114,9 @@ func (orderMatcher) priority() int { return 3 }
 func (m orderMatcher) label() string {
 	return fmt.Sprintf("%s(%s)", m.op, formatValue(m.condition))
 }
-func (m orderMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m orderMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: "$" + strings.ToLower(m.op)}
 }
-func (m orderMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+func (m orderMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", "$"+strings.ToLower(m.op), m.label())
 }

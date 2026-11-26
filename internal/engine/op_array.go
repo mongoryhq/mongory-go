@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"reflect"
-	"strings"
 )
 
 func init() {
@@ -81,11 +80,11 @@ func (m *elemMatchMatcher) matchReflect(rv reflect.Value) bool {
 }
 
 func (m *elemMatchMatcher) priority() int { return 3 + m.inner.priority() }
-func (m *elemMatchMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	explainBranch(buf, prefix, isLast, isRoot, "ElemMatch", m.inner)
+func (m *elemMatchMatcher) explainNode() ExplainNode {
+	return explainBranchNode("elem_match", "$elemMatch", "", "ElemMatch", m.priority(), m.inner)
 }
-func (m *elemMatchMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceArrayElements(record, buf, prefix, isLast, isRoot, "ElemMatch", m.inner, true)
+func (m *elemMatchMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceArrayElementsNode(record, "elem_match", "$elemMatch", "ElemMatch", m.priority(), m.inner, true)
 }
 
 // everyMatcher matches a non-empty array whose elements all satisfy the
@@ -115,11 +114,11 @@ func (m *everyMatcher) matchReflect(rv reflect.Value) bool {
 }
 
 func (m *everyMatcher) priority() int { return 3 + m.inner.priority() }
-func (m *everyMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	explainBranch(buf, prefix, isLast, isRoot, "Every", m.inner)
+func (m *everyMatcher) explainNode() ExplainNode {
+	return explainBranchNode("every", "$every", "", "Every", m.priority(), m.inner)
 }
-func (m *everyMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceArrayElements(record, buf, prefix, isLast, isRoot, "Every", m.inner, false)
+func (m *everyMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceArrayElementsNode(record, "every", "$every", "Every", m.priority(), m.inner, false)
 }
 
 func extractTraceList(record any) ([]any, bool) {
@@ -140,33 +139,58 @@ func extractTraceList(record any) ([]any, bool) {
 	return out, true
 }
 
-func traceArrayElements(record any, buf *strings.Builder, prefix string, isLast, isRoot bool, op string, inner matcher, stopOn bool) bool {
+func traceArrayElementsNode(record any, kind, operator, op string, priority int, inner matcher, stopOn bool) (bool, TraceNode) {
 	arr, ok := extractTraceList(record)
 	if !ok || len(arr) == 0 {
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] %s | value=%s", op, formatTraceValue(record)))
-		return false
+		return false, TraceNode{
+			Kind:      kind,
+			Status:    TraceFail,
+			Label:     op,
+			Priority:  priority,
+			Operator:  operator,
+			ValueText: formatTraceValue(record),
+			Value:     snapshotTraceValue(record),
+			Exists:    boolPtr(recordExists(record)),
+		}
 	}
-	childPrefix := childPrefixFor(prefix, isLast, isRoot)
-	var childBuf strings.Builder
+	children := make([]TraceNode, 0, len(arr))
 	matched := !stopOn
 	for i, e := range arr {
-		elemLast := i == len(arr)-1
-		elemChildPrefix := childPrefixFor(childPrefix, elemLast, false)
-		var elemBuf strings.Builder
-		res := inner.trace(e, &elemBuf, elemChildPrefix, true, false)
-		writeTreeLine(&childBuf, childPrefix, elemLast, false, fmt.Sprintf("[%s] [%d] | value=%s", statusLabel(res), i, formatTraceValue(e)))
-		childBuf.WriteString(elemBuf.String())
+		res, elemChild := inner.traceNode(e)
+		children = append(children, TraceNode{
+			Kind:      "element",
+			Status:    traceStatus(res),
+			Label:     fmt.Sprintf("[%d]", i),
+			Index:     intPtr(i),
+			ValueText: formatTraceValue(e),
+			Value:     snapshotTraceValue(e),
+			Exists:    boolPtr(recordExists(e)),
+			Children:  []TraceNode{elemChild},
+		})
 		if res == stopOn {
 			matched = stopOn
 			if rem := len(arr) - i - 1; rem > 0 {
-				writeTreeLine(&childBuf, childPrefix, true, false, fmt.Sprintf("[SKIP] %d remaining element(s) (short-circuited)", rem))
+				children = append(children, TraceNode{
+					Kind:         "skip",
+					Status:       TraceSkip,
+					Label:        fmt.Sprintf("%d remaining element(s) (short-circuited)", rem),
+					SkippedCount: rem,
+				})
 			}
 			break
 		}
 	}
-	writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), op, formatTraceValue(record)))
-	buf.WriteString(childBuf.String())
-	return matched
+	return matched, TraceNode{
+		Kind:      kind,
+		Status:    traceStatus(matched),
+		Label:     op,
+		Priority:  priority,
+		Operator:  operator,
+		ValueText: formatTraceValue(record),
+		Value:     snapshotTraceValue(record),
+		Exists:    boolPtr(recordExists(record)),
+		Children:  children,
+	}
 }
 
 func buildElementCondition(ctx *compileCtx, operator string, condition any) (matcher, error) {
@@ -211,14 +235,22 @@ func (m *sizeMatcher) matchReflect(rv reflect.Value) bool {
 }
 
 func (m *sizeMatcher) priority() int { return 2 + m.inner.priority() }
-func (m *sizeMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	explainBranch(buf, prefix, isLast, isRoot, "Size", m.inner)
+func (m *sizeMatcher) explainNode() ExplainNode {
+	return explainBranchNode("size", "$size", "", "Size", m.priority(), m.inner)
 }
-func (m *sizeMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *sizeMatcher) traceNode(record any) (bool, TraceNode) {
 	arr, ok := extractTraceList(record)
 	if !ok {
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Size | value=%s", formatTraceValue(record)))
-		return false
+		return false, TraceNode{
+			Kind:      "size",
+			Status:    TraceFail,
+			Label:     "Size",
+			Priority:  m.priority(),
+			Operator:  "$size",
+			ValueText: formatTraceValue(record),
+			Value:     snapshotTraceValue(record),
+			Exists:    boolPtr(recordExists(record)),
+		}
 	}
-	return traceWrapped(int64(len(arr)), buf, prefix, isLast, isRoot, fmt.Sprintf("Size(len=%d)", len(arr)), m.inner, false)
+	return traceWrappedNode(int64(len(arr)), "size", "$size", "", fmt.Sprintf("Size(len=%d)", len(arr)), m.priority(), m.inner, false)
 }

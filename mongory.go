@@ -55,6 +55,21 @@ type Predicate = engine.Predicate
 // Operator defines a per-Compile custom query operator whose name starts with "$".
 type Operator = engine.Operator
 
+// TraceStatus is the evaluation outcome of one node in a [TraceNode] tree.
+type TraceStatus = engine.TraceStatus
+
+const (
+	TracePass TraceStatus = engine.TracePass
+	TraceFail TraceStatus = engine.TraceFail
+	TraceSkip TraceStatus = engine.TraceSkip
+)
+
+// ExplainNode is one node in the structured tree returned by [Matcher.ExplainTree].
+type ExplainNode = engine.ExplainNode
+
+// TraceNode is one node in the structured evaluation trace returned by [Matcher.TraceTree].
+type TraceNode = engine.TraceNode
+
 // WithOptions bundles multiple options into one reusable preset Option applied
 // left to right (later entries override earlier duplicates). Nil entries are
 // ignored.

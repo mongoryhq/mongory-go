@@ -61,23 +61,45 @@ func (t *Tree) Match(record any) bool {
 	return matchRaw(t.root, record)
 }
 
+// ExplainTree returns the compiled matcher tree as a structured ExplainNode.
+// Returns nil if t is nil.
+func (t *Tree) ExplainTree() *ExplainNode {
+	if t == nil || t.root == nil {
+		return nil
+	}
+	node := t.root.explainNode()
+	return &node
+}
+
 // Explain returns a human-readable representation of the compiled matcher tree.
 func (t *Tree) Explain() string {
-	if t == nil || t.root == nil {
+	node := t.ExplainTree()
+	if node == nil {
 		return ""
 	}
 	var buf strings.Builder
-	t.root.explain(&buf, "", true, true)
+	renderExplainNode(&buf, node, "", true, true)
 	return buf.String()
+}
+
+// TraceTree evaluates record against the compiled condition and returns both
+// the result and a structured per-node TraceNode tree.
+func (t *Tree) TraceTree(record any) (bool, *TraceNode) {
+	if t == nil || t.root == nil {
+		return false, nil
+	}
+	matched, node := t.root.traceNode(record)
+	return matched, &node
 }
 
 // Trace evaluates record against the compiled condition and returns both the
 // result and a per-node execution trace.
 func (t *Tree) Trace(record any) (bool, string) {
-	if t == nil || t.root == nil {
+	matched, node := t.TraceTree(record)
+	if node == nil {
 		return false, ""
 	}
 	var buf strings.Builder
-	matched := t.root.trace(record, &buf, "", true, true)
+	renderTraceNode(&buf, node, "", true, true)
 	return matched, buf.String()
 }

@@ -95,6 +95,14 @@ func ExampleMatcher_Trace() {
 	//     └── [FAIL] Gte(18) | value=15
 }
 
+func ExampleMatcher_TraceTree() {
+	m := mongory.MustCompile(mongory.M{"age": mongory.M{"$gte": 18}, "status": "active"})
+	ok, tree := m.TraceTree(mongory.M{"age": 15, "status": "active"})
+	fmt.Println(ok, tree.Kind, tree.Status, tree.Children[1].Field, tree.Children[1].Status)
+	// Output:
+	// false and fail age fail
+}
+
 func ExampleWithOptions() {
 	type Money struct {
 		Currency string

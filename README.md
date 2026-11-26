@@ -90,15 +90,18 @@ Measured on Apple M3 (macOS arm64, `10,000` records per op; full Plain Go & peer
 
 *(Map hot paths run at `25.27 ns/rec` simple and `27.35 ns/rec` for 500-item `$in`; struct `Count` runs at `35.44 ns/rec` simple, all at `0 allocs/op`. Peer benchmarks live in the isolated [`bench/`](bench) submodule so the root module stays zero-dependency.)*
 
-## Debugging with `Explain` and `Trace`
+## Debugging with `Explain`, `Trace`, `ExplainTree`, and `TraceTree`
 
-Both `Explain()` and `Trace(record)` are pure, non-mutating, and safe to call concurrently with `Match`:
+`Explain()`, `Trace(record)`, `ExplainTree()`, and `TraceTree(record)` are pure, non-mutating, and safe to call concurrently with `Match`. The `*Tree` variants return JSON-serializable `*ExplainNode` / `*TraceNode` structs (`Kind`, `Status`, `Label`, `Priority`, `Operator`, `Field`, `Index`, `SkippedCount`, `ValueText`, `Value`, `Exists`, `Children`):
 
 ```go
 fmt.Print(m.Explain())
 
 ok, trace := m.Trace(mongory.M{"age": 15, "status": "active"})
 fmt.Print(trace)
+
+ok, tree := m.TraceTree(mongory.M{"age": 15, "status": "active"})
+data, _ := json.MarshalIndent(tree, "", "  ")
 ```
 
 ```text

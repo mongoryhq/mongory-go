@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"reflect"
-	"strings"
 )
 
 type customOpMatcher struct {
@@ -59,13 +58,20 @@ func (m customOpMatcher) label() string {
 	return fmt.Sprintf("%s(%s)", m.name, formatValue(m.arg))
 }
 
-func (m customOpMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m customOpMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "custom", Label: m.label(), Priority: m.priority(), Operator: m.name}
 }
 
-func (m customOpMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m customOpMatcher) traceNode(record any) (bool, TraceNode) {
 	matched := m.match(record)
-	line := fmt.Sprintf("[%s] %s | value=%s", statusLabel(matched), m.label(), formatTraceValue(record))
-	writeTreeLine(buf, prefix, isLast, isRoot, line)
-	return matched
+	return matched, TraceNode{
+		Kind:      "custom",
+		Status:    traceStatus(matched),
+		Label:     m.label(),
+		Priority:  m.priority(),
+		Operator:  m.name,
+		ValueText: formatTraceValue(record),
+		Value:     snapshotTraceValue(record),
+		Exists:    boolPtr(recordExists(record)),
+	}
 }

@@ -23,6 +23,15 @@ func (m *Matcher) Match(record any) bool {
 	return m.tree.Match(record)
 }
 
+// ExplainTree returns a structured AST representation of the compiled matcher.
+// Returns nil when m is nil.
+func (m *Matcher) ExplainTree() *ExplainNode {
+	if m == nil || m.tree == nil {
+		return nil
+	}
+	return m.tree.ExplainTree()
+}
+
 // Explain returns a human-readable tree diagram of the compiled matcher.
 func (m *Matcher) Explain() string {
 	if m == nil || m.tree == nil {
@@ -34,6 +43,16 @@ func (m *Matcher) Explain() string {
 // String implements fmt.Stringer using Explain.
 func (m *Matcher) String() string {
 	return m.Explain()
+}
+
+// TraceTree evaluates record against the compiled condition and returns both
+// the match outcome and a JSON-serializable per-node evaluation tree.
+// TraceTree does not mutate m and is safe to call concurrently with Match.
+func (m *Matcher) TraceTree(record any) (bool, *TraceNode) {
+	if m == nil || m.tree == nil {
+		return false, nil
+	}
+	return m.tree.TraceTree(record)
 }
 
 // Trace evaluates record against the compiled condition and returns both the

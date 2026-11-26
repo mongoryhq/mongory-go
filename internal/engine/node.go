@@ -20,8 +20,8 @@ type matcher interface {
 	matchReflect(rv reflect.Value) bool
 	// priority orders sibling matchers so cheaper ones run first.
 	priority() int
-	explain(buf *strings.Builder, prefix string, isLast, isRoot bool)
-	trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool
+	explainNode() ExplainNode
+	traceNode(record any) (bool, TraceNode)
 }
 
 func matchRaw(m matcher, v any) bool {
@@ -232,16 +232,15 @@ func (m *allOf) matchReflect(rv reflect.Value) bool {
 }
 
 func (m *allOf) priority() int { return 1 + sumPriority(*m.children.Load()) }
-func (m *allOf) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+func (m *allOf) explainNode() ExplainNode {
 	children := *m.children.Load()
 	if len(children) == 0 {
-		writeTreeLine(buf, prefix, isLast, isRoot, "And (empty)")
-		return
+		return ExplainNode{Kind: "and", Label: "And (empty)", Priority: m.priority(), Operator: "$and"}
 	}
-	explainBranch(buf, prefix, isLast, isRoot, "And", children...)
+	return explainBranchNode("and", "$and", "", "And", m.priority(), children...)
 }
-func (m *allOf) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceGroup(record, buf, prefix, isLast, isRoot, "And", *m.children.Load(), false)
+func (m *allOf) traceNode(record any) (bool, TraceNode) {
+	return traceGroupNode(record, "and", "$and", "And", m.priority(), *m.children.Load(), false)
 }
 
 // anyOf matches when some child matches.
@@ -274,16 +273,15 @@ func (m *anyOf) matchReflect(rv reflect.Value) bool {
 }
 
 func (m *anyOf) priority() int { return 1 + sumPriority(*m.children.Load()) }
-func (m *anyOf) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
+func (m *anyOf) explainNode() ExplainNode {
 	children := *m.children.Load()
 	if len(children) == 0 {
-		writeTreeLine(buf, prefix, isLast, isRoot, "Or (empty)")
-		return
+		return ExplainNode{Kind: "or", Label: "Or (empty)", Priority: m.priority(), Operator: "$or"}
 	}
-	explainBranch(buf, prefix, isLast, isRoot, "Or", children...)
+	return explainBranchNode("or", "$or", "", "Or", m.priority(), children...)
 }
-func (m *anyOf) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceGroup(record, buf, prefix, isLast, isRoot, "Or", *m.children.Load(), true)
+func (m *anyOf) traceNode(record any) (bool, TraceNode) {
+	return traceGroupNode(record, "or", "$or", "Or", m.priority(), *m.children.Load(), true)
 }
 
 func sumPriority(ms []matcher) int {
@@ -582,8 +580,8 @@ func (m *literalMatcher) matchReflect(rv reflect.Value) bool {
 }
 
 func (m *literalMatcher) priority() int { return 1 + m.activeMatcher().priority() }
-func (m *literalMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	m.activeMatcher().explain(buf, prefix, isLast, isRoot)
+func (m *literalMatcher) explainNode() ExplainNode {
+	return m.activeMatcher().explainNode()
 }
 func isArrayRecordValue(v any) bool {
 	if _, ok := v.([]any); ok {
@@ -599,16 +597,23 @@ func isArrayRecordValue(v any) bool {
 	return ok && isReflectList(rv)
 }
 
-func (m *literalMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *literalMatcher) traceNode(record any) (bool, TraceNode) {
 	if isArrayRecordValue(record) {
 		m.ensureArrayRecord()
 		if m.arrayRecord == nil {
-			writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] ArrayRecord | value=%s", formatTraceValue(record)))
-			return false
+			return false, TraceNode{
+				Kind:      "array_record",
+				Status:    TraceFail,
+				Label:     "ArrayRecord",
+				Priority:  m.priority(),
+				ValueText: formatTraceValue(record),
+				Value:     snapshotTraceValue(record),
+				Exists:    boolPtr(recordExists(record)),
+			}
 		}
-		return m.arrayRecord.trace(record, buf, prefix, isLast, isRoot)
+		return m.arrayRecord.traceNode(record)
 	}
-	return m.dispatched.trace(record, buf, prefix, isLast, isRoot)
+	return m.dispatched.traceNode(record)
 }
 
 // nullMatcher implements a literal null condition: missing or explicit nil.
@@ -617,11 +622,11 @@ type nullMatcher struct{}
 func (nullMatcher) match(record any) bool              { return record == nil || record == missing }
 func (nullMatcher) matchReflect(rv reflect.Value) bool { _, ok := unwrapReflect(rv); return !ok }
 func (nullMatcher) priority() int                      { return 2 }
-func (nullMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, "Eq(nil) | NotExists")
+func (nullMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "null", Label: "Eq(nil) | NotExists", Priority: 2}
 }
-func (m nullMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, "Eq(nil) | NotExists")
+func (m nullMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "null", "", "Eq(nil) | NotExists")
 }
 
 // fieldMatcher digs one key out of a map (or one index out of an array) and
@@ -830,8 +835,8 @@ func (m *fieldMatcher) matchSliceIndex(rv reflect.Value) bool {
 }
 
 func (m *fieldMatcher) priority() int { return 1 + m.literal.priority() }
-func (m *fieldMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	explainBranch(buf, prefix, isLast, isRoot, fmt.Sprintf("Field(%q)", m.field), m.literal)
+func (m *fieldMatcher) explainNode() ExplainNode {
+	return explainBranchNode("field", "", m.field, fmt.Sprintf("Field(%q)", m.field), m.priority(), m.literal)
 }
 
 func (m *fieldMatcher) extractTraceValueWithGetters(record any, getters *getterRegistry) (any, bool) {
@@ -945,13 +950,21 @@ func (m *fieldMatcher) extractTraceSliceIndex(rv reflect.Value) any {
 	return missing
 }
 
-func (m *fieldMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *fieldMatcher) traceNode(record any) (bool, TraceNode) {
 	value, ok := m.extractTraceValueWithGetters(record, nil)
 	if !ok {
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Field(%q) | value=%s", m.field, formatTraceValue(record)))
-		return false
+		return false, TraceNode{
+			Kind:      "field",
+			Status:    TraceFail,
+			Label:     fmt.Sprintf("Field(%q)", m.field),
+			Priority:  m.priority(),
+			Field:     m.field,
+			ValueText: formatTraceValue(record),
+			Value:     snapshotTraceValue(record),
+			Exists:    boolPtr(recordExists(record)),
+		}
 	}
-	return traceWrapped(value, buf, prefix, isLast, isRoot, fmt.Sprintf("Field(%q)", m.field), m.literal, false)
+	return traceWrappedNode(value, "field", "", m.field, fmt.Sprintf("Field(%q)", m.field), m.priority(), m.literal, false)
 }
 
 // parseIndexKey accepts canonical base-10 integers only: "01", "-0" and "+1"

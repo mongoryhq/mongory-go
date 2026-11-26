@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"strings"
 	"time"
 )
 
@@ -110,12 +109,19 @@ func (m inMatcher) label() string {
 	return fmt.Sprintf("%s(%s)", op, formatValue(m.items))
 }
 
-func (m inMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m inMatcher) operator() string {
+	if m.negate {
+		return "$nin"
+	}
+	return "$in"
 }
 
-func (m inMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+func (m inMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: m.operator()}
+}
+
+func (m inMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", m.operator(), m.label())
 }
 
 // timeKey represents the UTC instant of a time.Time independent of Location or

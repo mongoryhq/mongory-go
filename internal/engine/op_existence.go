@@ -48,11 +48,11 @@ func (m boolMatcher) match(record any) bool              { return m.test(record,
 func (m boolMatcher) matchReflect(rv reflect.Value) bool { return m.testReflect(rv, m.want) }
 func (boolMatcher) priority() int                        { return 2 }
 func (m boolMatcher) label() string                      { return fmt.Sprintf("%s(%t)", m.op, m.want) }
-func (m boolMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	writeTreeLine(buf, prefix, isLast, isRoot, m.label())
+func (m boolMatcher) explainNode() ExplainNode {
+	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: "$" + strings.ToLower(m.op)}
 }
-func (m boolMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
-	return traceLeaf(m, record, buf, prefix, isLast, isRoot, m.label())
+func (m boolMatcher) traceNode(record any) (bool, TraceNode) {
+	return traceLeafNode(m, record, "operator", "$"+strings.ToLower(m.op), m.label())
 }
 
 // isPresent is false for missing, nil, false, and empty strings, arrays and

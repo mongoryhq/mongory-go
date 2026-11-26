@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -71,19 +70,26 @@ func (m *extLiteralMatcher) matchReflect(rv reflect.Value) bool {
 }
 
 func (m *extLiteralMatcher) priority() int { return 1 + m.activeMatcher().priority() }
-func (m *extLiteralMatcher) explain(buf *strings.Builder, prefix string, isLast, isRoot bool) {
-	m.activeMatcher().explain(buf, prefix, isLast, isRoot)
+func (m *extLiteralMatcher) explainNode() ExplainNode {
+	return m.activeMatcher().explainNode()
 }
-func (m *extLiteralMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *extLiteralMatcher) traceNode(record any) (bool, TraceNode) {
 	if isArrayRecordValue(record) {
 		m.ensureArrayRecord()
 		if m.arrayRecord == nil {
-			writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] ArrayRecord | value=%s", formatTraceValue(record)))
-			return false
+			return false, TraceNode{
+				Kind:      "array_record",
+				Status:    TraceFail,
+				Label:     "ArrayRecord",
+				Priority:  m.priority(),
+				ValueText: formatTraceValue(record),
+				Value:     snapshotTraceValue(record),
+				Exists:    boolPtr(recordExists(record)),
+			}
 		}
-		return m.arrayRecord.trace(record, buf, prefix, isLast, isRoot)
+		return m.arrayRecord.traceNode(record)
 	}
-	return m.dispatched.trace(record, buf, prefix, isLast, isRoot)
+	return m.dispatched.traceNode(record)
 }
 
 // extFieldMatcher handles field lookup when compile-time getters/resolvers or
@@ -205,13 +211,21 @@ func (m *extFieldMatcher) resolveExtSlot(t reflect.Type) (*fieldSlot, *structInf
 	return slot, info
 }
 
-func (m *extFieldMatcher) trace(record any, buf *strings.Builder, prefix string, isLast, isRoot bool) bool {
+func (m *extFieldMatcher) traceNode(record any) (bool, TraceNode) {
 	value, ok := m.extractTraceValueWithGetters(record, m.getters)
 	if !ok {
-		writeTreeLine(buf, prefix, isLast, isRoot, fmt.Sprintf("[FAIL] Field(%q) | value=%s", m.field, formatTraceValue(record)))
-		return false
+		return false, TraceNode{
+			Kind:      "field",
+			Status:    TraceFail,
+			Label:     fmt.Sprintf("Field(%q)", m.field),
+			Priority:  m.priority(),
+			Field:     m.field,
+			ValueText: formatTraceValue(record),
+			Value:     snapshotTraceValue(record),
+			Exists:    boolPtr(recordExists(record)),
+		}
 	}
-	return traceWrapped(value, buf, prefix, isLast, isRoot, fmt.Sprintf("Field(%q)", m.field), m.literal, false)
+	return traceWrappedNode(value, "field", "", m.field, fmt.Sprintf("Field(%q)", m.field), m.priority(), m.literal, false)
 }
 
 func matchReflectValueRaw(m matcher, rv reflect.Value, raw bool) bool {
