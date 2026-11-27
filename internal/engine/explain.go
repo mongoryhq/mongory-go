@@ -278,9 +278,12 @@ func explainBranchNode(kind, operator, field, label string, priority int, childr
 	return out
 }
 
-func traceGroupNode(record any, kind, operator, op string, priority int, children []matcher, stopOn bool) (bool, TraceNode) {
+func traceGroupNode(record any, kind, operator, op string, priority int, children []matcher, stopOn, invert bool) (bool, TraceNode) {
 	if len(children) == 0 {
 		matched := !stopOn // empty And matches (stopOn=false -> true); empty Or never matches (stopOn=true -> false)
+		if invert {
+			matched = !matched
+		}
 		return matched, TraceNode{
 			Kind:      kind,
 			Status:    traceStatus(matched),
@@ -309,6 +312,9 @@ func traceGroupNode(record any, kind, operator, op string, priority int, childre
 			}
 			break
 		}
+	}
+	if invert {
+		matched = !matched
 	}
 	return matched, TraceNode{
 		Kind:      kind,

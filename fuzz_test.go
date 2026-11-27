@@ -72,6 +72,7 @@ func FuzzCompile(f *testing.F) {
 			M{key: M{"$gt": val, "$lte": num}},
 			M{key: M{"$not": M{"$eq": val}}},
 			M{"$or": A{M{key: val}, M{key: M{"$exists": mode%2 == 0}}}},
+			M{"$nor": A{M{key: val}, M{key: M{"$exists": mode%2 == 0}}}},
 		}
 		if decoded, ok := decodeJSONValue(raw); ok {
 			candidates = append(candidates, decoded)

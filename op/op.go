@@ -32,6 +32,7 @@ const (
 	// Logical operators.
 	And = "$and"
 	Or  = "$or"
+	Nor = "$nor"
 	Not = "$not"
 
 	// Array operators.

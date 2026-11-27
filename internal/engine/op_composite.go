@@ -26,6 +26,13 @@ func init() {
 		}
 		return newAnyOf(children), nil
 	})
+	register("$nor", func(ctx *compileCtx, c any) (matcher, error) {
+		children, err := buildConditionList(ctx, "$nor", c)
+		if err != nil {
+			return nil, err
+		}
+		return newNoneOf(children), nil
+	})
 	register("$not", buildNot)
 }
 

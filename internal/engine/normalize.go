@@ -624,7 +624,7 @@ func convertConditionWithSeen(condition map[string]any, depth int, opts normOpts
 
 func isListOperator(key string) bool {
 	switch key {
-	case "$in", "$nin", "$and", "$or":
+	case "$in", "$nin", "$and", "$or", "$nor":
 		return true
 	}
 	return false

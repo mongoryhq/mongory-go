@@ -240,7 +240,7 @@ func (m *allOf) explainNode() ExplainNode {
 	return explainBranchNode("and", "$and", "", "And", m.priority(), children...)
 }
 func (m *allOf) traceNode(record any) (bool, TraceNode) {
-	return traceGroupNode(record, "and", "$and", "And", m.priority(), *m.children.Load(), false)
+	return traceGroupNode(record, "and", "$and", "And", m.priority(), *m.children.Load(), false, false)
 }
 
 // anyOf matches when some child matches.
@@ -281,7 +281,48 @@ func (m *anyOf) explainNode() ExplainNode {
 	return explainBranchNode("or", "$or", "", "Or", m.priority(), children...)
 }
 func (m *anyOf) traceNode(record any) (bool, TraceNode) {
-	return traceGroupNode(record, "or", "$or", "Or", m.priority(), *m.children.Load(), true)
+	return traceGroupNode(record, "or", "$or", "Or", m.priority(), *m.children.Load(), true, false)
+}
+
+// noneOf matches when no child matches; empty matches anything.
+type noneOf struct {
+	compositeGroup
+}
+
+func newNoneOf(children []matcher) *noneOf {
+	m := &noneOf{}
+	m.init(children, m)
+	return m
+}
+
+func (m *noneOf) match(record any) bool {
+	for _, c := range *m.children.Load() {
+		if c.match(record) {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *noneOf) matchReflect(rv reflect.Value) bool {
+	for _, c := range *m.children.Load() {
+		if c.matchReflect(rv) {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *noneOf) priority() int { return 2 + sumPriority(*m.children.Load()) }
+func (m *noneOf) explainNode() ExplainNode {
+	children := *m.children.Load()
+	if len(children) == 0 {
+		return ExplainNode{Kind: "nor", Label: "Nor (empty)", Priority: m.priority(), Operator: "$nor"}
+	}
+	return explainBranchNode("nor", "$nor", "", "Nor", m.priority(), children...)
+}
+func (m *noneOf) traceNode(record any) (bool, TraceNode) {
+	return traceGroupNode(record, "nor", "$nor", "Nor", m.priority(), *m.children.Load(), true, true)
 }
 
 func sumPriority(ms []matcher) int {
