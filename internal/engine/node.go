@@ -492,7 +492,6 @@ func buildLiteral(ctx *compileCtx, condition any) (matcher, error) {
 		dispatched:  dispatched,
 		arrayCtx:    extCtx,
 		hasCustomOp: hasCustom,
-		hasConv:     conv != nil,
 	}
 	attachChild(dispatched, m)
 	return m, nil

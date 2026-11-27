@@ -80,7 +80,7 @@ func Or(conds ...map[string]any) map[string]any {
 }
 
 func appendFlattenedAnd(out *[]map[string]any, c map[string]any) {
-	if c == nil || len(c) == 0 {
+	if len(c) == 0 {
 		return
 	}
 	rawAnd, hasAnd := c["$and"]

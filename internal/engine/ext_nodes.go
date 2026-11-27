@@ -16,7 +16,6 @@ type extLiteralMatcher struct {
 	dispatched  matcher
 	arrayCtx    *compileCtx // nil limits; keeps converters, getters, customOps
 	hasCustomOp bool
-	hasConv     bool
 
 	arrayOnce   sync.Once
 	arrayReady  atomic.Bool
