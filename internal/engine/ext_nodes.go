@@ -69,7 +69,7 @@ func (m *extLiteralMatcher) matchReflect(rv reflect.Value) bool {
 	return m.dispatched.matchReflect(rv)
 }
 
-func (m *extLiteralMatcher) priority() int { return 1 + m.activeMatcher().priority() }
+func (m *extLiteralMatcher) priority() int { return m.activeMatcher().priority() }
 func (m *extLiteralMatcher) explainNode() ExplainNode {
 	return m.activeMatcher().explainNode()
 }

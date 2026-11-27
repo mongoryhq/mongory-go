@@ -95,10 +95,14 @@ func (m inMatcher) containsReflect(rv reflect.Value) bool {
 }
 
 func (m inMatcher) priority() int {
+	base := 2 + len(m.items)/8
 	if m.set != nil {
-		return 3 + len(m.set.fallback)/8
+		base = 3 + len(m.set.fallback)/8
 	}
-	return 2 + len(m.items)/8
+	if m.negate {
+		return base + 1
+	}
+	return base
 }
 
 func (m inMatcher) label() string {

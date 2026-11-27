@@ -76,7 +76,7 @@ func buildNot(ctx *compileCtx, condition any) (matcher, error) {
 
 func (m *notMatcher) match(record any) bool              { return !m.inner.match(record) }
 func (m *notMatcher) matchReflect(rv reflect.Value) bool { return !m.inner.matchReflect(rv) }
-func (m *notMatcher) priority() int                      { return 1 + m.inner.priority() }
+func (m *notMatcher) priority() int                      { return 2 + m.inner.priority() }
 func (m *notMatcher) explainNode() ExplainNode {
 	return explainBranchNode("not", "$not", "", "Not", m.priority(), m.inner)
 }

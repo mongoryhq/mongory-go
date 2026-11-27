@@ -74,7 +74,7 @@ type neMatcher struct {
 
 func (m neMatcher) match(record any) bool              { return !eqMatcher(m).match(record) }
 func (m neMatcher) matchReflect(rv reflect.Value) bool { return !eqMatcher(m).matchReflect(rv) }
-func (neMatcher) priority() int                        { return 1 }
+func (neMatcher) priority() int                        { return 2 }
 func (m neMatcher) label() string                      { return fmt.Sprintf("Ne(%s)", formatValue(m.condition)) }
 func (m neMatcher) explainNode() ExplainNode {
 	return ExplainNode{Kind: "operator", Label: m.label(), Priority: m.priority(), Operator: "$ne"}
@@ -110,7 +110,7 @@ func (m orderMatcher) matchReflect(rv reflect.Value) bool {
 	return ok && m.accept(cmp)
 }
 
-func (orderMatcher) priority() int { return 3 }
+func (orderMatcher) priority() int { return 2 }
 func (m orderMatcher) label() string {
 	return fmt.Sprintf("%s(%s)", m.op, formatValue(m.condition))
 }

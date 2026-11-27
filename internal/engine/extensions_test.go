@@ -93,8 +93,13 @@ func TestLazyArrayRecordUpdatesPriorityAndExplainUnderConcurrency(t *testing.T) 
 		beforeChildren = append(beforeChildren, c.priority())
 	}
 	beforeRoot := tree.root.priority()
-	if beforeRoot != 34 {
-		t.Fatalf("expected initial priority 34 (children=%v), got %d", beforeChildren, beforeRoot)
+	if beforeRoot != 27 {
+		t.Fatalf("expected initial priority 27 (children=%v), got %d", beforeChildren, beforeRoot)
+	}
+	// Verify $size ($gte:3, $lte:5) sorts BEFORE $every ($gte:60) inside scores.
+	explainBefore := tree.Explain()
+	if strings.Index(explainBefore, "Size") > strings.Index(explainBefore, "Every") {
+		t.Fatalf("expected Size before Every in Explain, got:\n%s", explainBefore)
 	}
 
 	rec := map[string]any{
@@ -125,8 +130,8 @@ func TestLazyArrayRecordUpdatesPriorityAndExplainUnderConcurrency(t *testing.T) 
 	}
 
 	afterRoot := tree.root.priority()
-	if afterRoot != 40 {
-		t.Fatalf("expected updated priority 40 after lazy array build, got %d", afterRoot)
+	if afterRoot != 50 {
+		t.Fatalf("expected updated priority 50 after lazy array build, got %d", afterRoot)
 	}
 
 	// Extension path (*extLiteralMatcher) also updates priority cleanly.
@@ -134,14 +139,14 @@ func TestLazyArrayRecordUpdatesPriorityAndExplainUnderConcurrency(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ext Compile failed: %v", err)
 	}
-	if extTree.root.priority() != 3 {
-		t.Fatalf("expected initial ext priority 3, got %d", extTree.root.priority())
+	if extTree.root.priority() != 2 {
+		t.Fatalf("expected initial ext priority 2, got %d", extTree.root.priority())
 	}
 	if !extTree.Match(map[string]any{"tags": []any{"go", "ts"}}) {
 		t.Fatal("expected ext match")
 	}
-	if extTree.root.priority() != 6 {
-		t.Fatalf("expected updated ext priority 6, got %d", extTree.root.priority())
+	if extTree.root.priority() != 11 {
+		t.Fatalf("expected updated ext priority 11, got %d", extTree.root.priority())
 	}
 }
 
@@ -177,8 +182,8 @@ func TestLazyArrayRecordResortsCompositeChildren(t *testing.T) {
 		t.Fatal("expected match")
 	}
 
-	if got := strings.Join(childFields(root), ","); got != "age,tags,items" {
-		t.Fatalf("expected re-sorted order age,tags,items, got %s", got)
+	if got := strings.Join(childFields(root), ","); got != "age,items,tags" {
+		t.Fatalf("expected re-sorted order age,items,tags, got %s", got)
 	}
 	explain := tree.Explain()
 	if strings.Index(explain, `Field("age")`) > strings.Index(explain, `Field("tags")`) {

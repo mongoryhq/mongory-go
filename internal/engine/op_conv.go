@@ -86,7 +86,12 @@ func (m eqConvMatcher) matchEqReflect(rv reflect.Value) bool {
 
 func (m eqConvMatcher) match(record any) bool              { return m.matchEq(record) != m.negate }
 func (m eqConvMatcher) matchReflect(rv reflect.Value) bool { return m.matchEqReflect(rv) != m.negate }
-func (eqConvMatcher) priority() int                        { return 1 }
+func (m eqConvMatcher) priority() int {
+	if m.negate {
+		return 2
+	}
+	return 1
+}
 func (m eqConvMatcher) label() string {
 	op := "Eq"
 	if m.negate {

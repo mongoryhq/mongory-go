@@ -79,7 +79,7 @@ func (m *elemMatchMatcher) matchReflect(rv reflect.Value) bool {
 	return matchListElementsReflect(rv, m.inner, m.raw, true)
 }
 
-func (m *elemMatchMatcher) priority() int { return 3 + m.inner.priority() }
+func (m *elemMatchMatcher) priority() int { return 8 + 2*m.inner.priority() }
 func (m *elemMatchMatcher) explainNode() ExplainNode {
 	return explainBranchNode("elem_match", "$elemMatch", "", "ElemMatch", m.priority(), m.inner)
 }
@@ -113,7 +113,7 @@ func (m *everyMatcher) matchReflect(rv reflect.Value) bool {
 	return matchListElementsReflect(rv, m.inner, m.raw, false)
 }
 
-func (m *everyMatcher) priority() int { return 3 + m.inner.priority() }
+func (m *everyMatcher) priority() int { return 8 + 2*m.inner.priority() }
 func (m *everyMatcher) explainNode() ExplainNode {
 	return explainBranchNode("every", "$every", "", "Every", m.priority(), m.inner)
 }
@@ -234,7 +234,7 @@ func (m *sizeMatcher) matchReflect(rv reflect.Value) bool {
 	return ok && isReflectList(list) && m.inner.match(int64(list.Len()))
 }
 
-func (m *sizeMatcher) priority() int { return 2 + m.inner.priority() }
+func (m *sizeMatcher) priority() int { return 1 + m.inner.priority()/2 }
 func (m *sizeMatcher) explainNode() ExplainNode {
 	return explainBranchNode("size", "$size", "", "Size", m.priority(), m.inner)
 }

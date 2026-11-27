@@ -579,7 +579,7 @@ func (m *literalMatcher) matchReflect(rv reflect.Value) bool {
 	return m.dispatched.matchReflect(rv)
 }
 
-func (m *literalMatcher) priority() int { return 1 + m.activeMatcher().priority() }
+func (m *literalMatcher) priority() int { return m.activeMatcher().priority() }
 func (m *literalMatcher) explainNode() ExplainNode {
 	return m.activeMatcher().explainNode()
 }
